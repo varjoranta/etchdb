@@ -88,11 +88,14 @@ The design also targets AI-assisted development: predictable verbs, no metaclass
 
 ## Non-goals
 
-- Migrations (use Alembic)
 - Query builder beyond simple CRUD (use raw SQL for joins)
 - Implicit relationships, lazy loading, eager loading
 - Sync support
 - A second canonical way to do anything
+
+## Migrations
+
+Out of scope for v0.1. A small forward-only, file-based migration helper (no autogenerate, no rollback, no DAG) is planned for a later release. etchdb owns no schema state today, so any external tool slots in fine in the meantime: Alembic if you also use SQLAlchemy, dbmate or sqitch if you don't, or a few `db.execute` calls in your bootstrap path.
 
 ## Built with AI assistance
 
