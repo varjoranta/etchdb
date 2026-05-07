@@ -12,7 +12,8 @@ Pre-alpha. Not on PyPI yet. Built in public from day one.
 from etchdb import DB, Row
 
 class User(Row):
-    id: int
+    __table__ = "users"
+    id: int | None = None             # leave unset and the DB allocates it (SERIAL / INTEGER PK)
     name: str
     email: str | None = None
 
@@ -20,11 +21,11 @@ class User(Row):
 db = await DB.from_url("postgresql+asyncpg://user@host/db")
 
 # Typed CRUD
-user = await db.get(User, id=1)               # one row or None
-users = await db.query(User, active=True)     # list of rows
-await db.insert(user)
-await db.update(user)
-await db.delete(user)
+alice = await db.insert(User(name="Alice"))           # alice.id is now populated by the DB
+user = await db.get(User, id=alice.id)                # one row or None
+users = await db.query(User)                          # list of rows
+await db.update(User(id=alice.id, name="Alice B"))    # partial: email is preserved
+await db.delete(alice)
 
 # Typed-result raw SQL (covers most joins)
 users = await db.fetch_models(User, """
@@ -39,7 +40,7 @@ await db.execute("UPDATE users SET active = false WHERE id = $1", uid)
 
 # Transactions
 async with db.transaction() as tx:
-    await tx.insert(user)
+    await tx.insert(User(name="Carol"))
     await tx.execute("INSERT INTO audit_log (...) VALUES (...)")
 
 # Inspect SQL before executing (etchdb's defining feature)
@@ -47,6 +48,8 @@ q = db.compose("get", User, id=1)
 print(q.sql)     # SELECT id, name, email FROM users WHERE id = $1
 print(q.params)  # [1]
 ```
+
+`insert` only emits the columns you actually set, so an unset `id` lets the database allocate one (SERIAL or INTEGER PRIMARY KEY). `update` does the same: a column you didn't touch keeps its current value rather than being clobbered. An explicit `None` counts as set in both cases.
 
 ## Install
 

@@ -1,4 +1,4 @@
-.PHONY: help install test test-unit test-integration db-up db-down lint typecheck fix build deploy clean
+.PHONY: help install test test-unit test-integration coverage db-up db-down lint typecheck fix build deploy clean
 .DEFAULT_GOAL := help
 
 help:
@@ -8,6 +8,7 @@ help:
 	@echo "  make test              run the full test suite (postgres tests skip if DB is down)"
 	@echo "  make test-unit         run only the dialect-neutral unit tests"
 	@echo "  make test-integration  bring up postgres, then run integration tests"
+	@echo "  make coverage          run the test suite with line-coverage reporting"
 	@echo "  make db-up             start the postgres container on localhost:5532"
 	@echo "  make db-down           stop and remove the postgres container + volumes"
 	@echo "  make lint              check lint + formatting"
@@ -28,6 +29,9 @@ test-unit:
 
 test-integration: db-up
 	uv run pytest tests/integration -v
+
+coverage:
+	uv run pytest --cov=etchdb --cov-report=term-missing
 
 db-up:
 	docker compose up -d --wait postgres
