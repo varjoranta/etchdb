@@ -1,6 +1,6 @@
 [project]
 name = "etchdb"
-version = "0.0.1"
+version = "0.1.0"
 description = "Minimal async DB layer for Python. Typed CRUD over Pydantic, raw SQL when you need it"
 readme = "README.md"
 requires-python = ">=3.12"
@@ -19,7 +19,7 @@ keywords = [
     "orm",
 ]
 classifiers = [
-    "Development Status :: 2 - Pre-Alpha",
+    "Development Status :: 3 - Alpha",
     "Programming Language :: Python :: 3",
     "Programming Language :: Python :: 3.12",
     "Programming Language :: Python :: 3.13",
