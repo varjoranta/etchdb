@@ -11,7 +11,7 @@ from etchdb.errors import (
 from etchdb.query import SqlQuery
 from etchdb.row import Row
 
-__version__ = "0.2.0"
+__version__ = "0.3.0"
 
 __all__ = [
     "DB",
