@@ -4,7 +4,7 @@ Minimal async DB layer for Python. Typed CRUD over Pydantic. Raw SQL when you ne
 
 ## Status
 
-Alpha. v0.3.0 on PyPI. Built in public from day one; expect tightening between alpha releases.
+Alpha. v0.4.0 on PyPI. Built in public from day one; expect tightening between alpha releases.
 
 ## Example
 
