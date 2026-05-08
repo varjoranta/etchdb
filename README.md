@@ -37,6 +37,10 @@ await db.update(User(id=alice.id, name="Alice B"),
 # so models with required NOT NULL columns still flow through.
 await db.update(User.patch(id=alice.id, name="Alice B"))
 
+# Bulk insert / delete (chunked at the driver's parameter limit).
+await db.insert_many([User(name=n) for n in names], on_conflict="ignore")
+await db.delete_many(User, [1, 2, 3])
+
 # Stream every matching row (paginated, won't load the whole table at once)
 # Uses offset pagination, so cost scales O(N**2) on huge tables; for those,
 # loop with a raw keyset query (WHERE id > last_id ORDER BY id LIMIT n).

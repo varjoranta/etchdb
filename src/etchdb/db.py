@@ -17,11 +17,16 @@ from urllib.parse import urlparse
 from etchdb import sql
 
 if TYPE_CHECKING:
-    from collections.abc import AsyncIterator, Mapping
+    from collections.abc import AsyncIterator, Mapping, Sequence
 
     from etchdb.adapter import AdapterBase
     from etchdb.query import SqlQuery
     from etchdb.row import Row
+
+
+# Postgres caps query parameters at 32767; SQLite is at least 32766 since
+# 3.32. Pick the lower bound so a chunk fits in any backend.
+_PARAM_LIMIT = 32766
 
 
 def _hydrate(model_or_row: type[Row] | Row, row: dict[str, Any] | None) -> Row | None:
@@ -172,6 +177,49 @@ class DB:
         q = sql.insert(row, placeholder=self._adapter.placeholder)
         result = await self._adapter.fetchrow(q.sql, *q.params)
         return _hydrate(row, result) or row
+
+    async def insert_many(
+        self,
+        rows: Sequence[Row],
+        *,
+        on_conflict: sql._OnConflict = None,
+    ) -> None:
+        """Insert many rows in one or more multi-VALUES statements.
+
+        All rows must share `model_fields_set`. Long batches are
+        chunked at the driver's parameter limit so a single call can
+        cover thousands of rows. `on_conflict="ignore"` appends
+        `ON CONFLICT DO NOTHING`. Empty `rows` is a no-op."""
+        if not rows:
+            return
+        cols_per_row = sum(1 for f in type(rows[0]).model_fields if f in rows[0].model_fields_set)
+        if cols_per_row == 0:
+            raise ValueError("insert_many requires at least one field set on the first row")
+        chunk_size = _PARAM_LIMIT // cols_per_row
+        for i in range(0, len(rows), chunk_size):
+            chunk = rows[i : i + chunk_size]
+            q = sql.insert_many(
+                chunk, placeholder=self._adapter.placeholder, on_conflict=on_conflict
+            )
+            await self._adapter.execute(q.sql, *q.params)
+
+    async def delete_many(
+        self,
+        model: type[Row],
+        pk_values: Sequence[Any],
+    ) -> None:
+        """Delete many rows by primary key.
+
+        For single-column PK, pass scalar values; for composite PK,
+        pass a list of mappings. Long batches are chunked at the
+        driver's parameter limit. Empty `pk_values` is a no-op."""
+        if not pk_values:
+            return
+        chunk_size = _PARAM_LIMIT // len(model.__pk__)
+        for i in range(0, len(pk_values), chunk_size):
+            chunk = pk_values[i : i + chunk_size]
+            q = sql.delete_many(model, chunk, placeholder=self._adapter.placeholder)
+            await self._adapter.execute(q.sql, *q.params)
 
     async def update(self, row: Row, *, where: Mapping[str, Any] | None = None) -> Row | None:
         """Update `row` by PK, AND'd with `where=`. Returns the updated

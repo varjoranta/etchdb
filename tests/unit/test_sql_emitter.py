@@ -482,6 +482,91 @@ def test_select_without_table_raises():
         sql.select_one(NoTable, placeholder=pg, id=1)
 
 
+# --- insert_many / delete_many ---------------------------------------
+
+
+def test_insert_many_pg_basic():
+    rows = [User(id=1, name="A"), User(id=2, name="B"), User(id=3, name="C")]
+    q = sql.insert_many(rows, placeholder=pg)
+
+    assert q.sql == ("INSERT INTO users (id, name) VALUES ($1, $2), ($3, $4), ($5, $6)")
+    assert q.params == [1, "A", 2, "B", 3, "C"]
+
+
+def test_insert_many_sqlite_basic():
+    rows = [User(id=1, name="A"), User(id=2, name="B")]
+    q = sql.insert_many(rows, placeholder=lite)
+
+    assert q.sql == "INSERT INTO users (id, name) VALUES (?, ?), (?, ?)"
+    assert q.params == [1, "A", 2, "B"]
+
+
+def test_insert_many_with_on_conflict_ignore():
+    rows = [User(id=1, name="A")]
+    q = sql.insert_many(rows, placeholder=pg, on_conflict="ignore")
+
+    assert q.sql.endswith("ON CONFLICT DO NOTHING")
+
+
+def test_insert_many_empty_raises():
+    with pytest.raises(ValueError, match="at least one row"):
+        sql.insert_many([], placeholder=pg)
+
+
+def test_insert_many_mixed_shapes_raises():
+    """All rows must share model_fields_set; mixing fields-set is rejected
+    early instead of silently dropping columns."""
+    rows = [User(id=1, name="A"), User(name="B", email="b@x")]
+    with pytest.raises(ValueError, match="model_fields_set"):
+        sql.insert_many(rows, placeholder=pg)
+
+
+def test_delete_many_single_pk_pg():
+    q = sql.delete_many(User, [1, 2, 3], placeholder=pg)
+
+    assert q.sql == "DELETE FROM users WHERE id IN ($1, $2, $3)"
+    assert q.params == [1, 2, 3]
+
+
+def test_delete_many_single_pk_sqlite():
+    q = sql.delete_many(User, [1, 2], placeholder=lite)
+
+    assert q.sql == "DELETE FROM users WHERE id IN (?, ?)"
+    assert q.params == [1, 2]
+
+
+def test_delete_many_composite_pk_pg():
+    q = sql.delete_many(
+        UserRole,
+        [{"user_id": 1, "role_id": 2}, {"user_id": 3, "role_id": 4}],
+        placeholder=pg,
+    )
+
+    assert q.sql == ("DELETE FROM user_roles WHERE (user_id, role_id) IN (($1, $2), ($3, $4))")
+    assert q.params == [1, 2, 3, 4]
+
+
+def test_delete_many_composite_pk_requires_mapping():
+    """Composite PK with scalar values rejected up front; the user's
+    intent (which value goes with which column) is unrecoverable."""
+    with pytest.raises(ValueError, match="mapping per row"):
+        sql.delete_many(UserRole, [1, 2], placeholder=pg)
+
+
+def test_delete_many_composite_pk_missing_field_raises():
+    with pytest.raises(ValueError, match="Missing PK fields"):
+        sql.delete_many(
+            UserRole,
+            [{"user_id": 1}],
+            placeholder=pg,
+        )
+
+
+def test_delete_many_empty_raises():
+    with pytest.raises(ValueError, match="at least one PK"):
+        sql.delete_many(User, [], placeholder=pg)
+
+
 # --- compose ---------------------------------------------------------
 
 

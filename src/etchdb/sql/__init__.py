@@ -6,11 +6,13 @@ own `placeholder` callable so the same emitter works for both Postgres
 ($1, $2, ...) and SQLite (?, ?, ...).
 """
 
-from collections.abc import Callable, Mapping
+from collections.abc import Callable, Mapping, Sequence
 from typing import Any, Literal
 
 from etchdb.query import SqlQuery
 from etchdb.row import Row
+
+_OnConflict = Literal["ignore"] | None
 
 
 def insert(
@@ -166,6 +168,103 @@ def delete(
     where_sql = _eq_clauses(where_fields, placeholder=placeholder)
     sql = f"DELETE FROM {table} WHERE {where_sql}"
     return SqlQuery(sql=sql, params=where_values)
+
+
+def insert_many(
+    rows: Sequence[Row],
+    *,
+    placeholder: Callable[[int], str],
+    on_conflict: _OnConflict = None,
+) -> SqlQuery:
+    """Build a multi-VALUES INSERT for `rows`.
+
+    All rows must have identical `model_fields_set`; mixed shapes
+    raise. `on_conflict="ignore"` appends `ON CONFLICT DO NOTHING`,
+    which both Postgres and SQLite (3.24+) accept. For richer conflict
+    handling, drop to raw SQL.
+
+    The DB facade chunks long batches at the driver's parameter limit
+    before calling this. This emitter builds one query per chunk.
+    """
+    if not rows:
+        raise ValueError("insert_many requires at least one row")
+
+    first = rows[0]
+    table = _table_name(first)
+    fields = [f for f in type(first).model_fields if f in first.model_fields_set]
+    if not fields:
+        raise ValueError("insert_many requires at least one field set on the first row")
+
+    expected = first.model_fields_set
+    for i, row in enumerate(rows):
+        if row.model_fields_set != expected:
+            raise ValueError(
+                f"insert_many: all rows must share model_fields_set; "
+                f"row[0] has {sorted(expected)}, row[{i}] has {sorted(row.model_fields_set)}."
+            )
+
+    columns = ", ".join(fields)
+    n = len(fields)
+
+    value_groups: list[str] = []
+    params: list[Any] = []
+    for row in rows:
+        group = ", ".join(placeholder(len(params) + i) for i in range(n))
+        value_groups.append(f"({group})")
+        params.extend(getattr(row, f) for f in fields)
+
+    sql = f"INSERT INTO {table} ({columns}) VALUES {', '.join(value_groups)}"
+    if on_conflict == "ignore":
+        sql += " ON CONFLICT DO NOTHING"
+
+    return SqlQuery(sql=sql, params=params)
+
+
+def delete_many(
+    model: type[Row],
+    pk_values: Sequence[Any],
+    *,
+    placeholder: Callable[[int], str],
+) -> SqlQuery:
+    """Build a DELETE for many rows by primary key.
+
+    For single-column PK, pass a list of scalar values:
+        delete_many(User, [1, 2, 3], placeholder=...)
+
+    For composite PK, pass a list of mappings:
+        delete_many(UserRole, [{"user_id": 1, "role_id": 2}, ...], placeholder=...)
+
+    The DB facade chunks long batches before calling this.
+    """
+    if not pk_values:
+        raise ValueError("delete_many requires at least one PK value")
+
+    table = _table_name(model)
+    pk_fields = list(model.__pk__)
+
+    if len(pk_fields) == 1:
+        col = pk_fields[0]
+        placeholders = ", ".join(placeholder(i) for i in range(len(pk_values)))
+        sql = f"DELETE FROM {table} WHERE {col} IN ({placeholders})"
+        return SqlQuery(sql=sql, params=list(pk_values))
+
+    pk_cols = ", ".join(pk_fields)
+    groups: list[str] = []
+    params: list[Any] = []
+    for pk_value in pk_values:
+        if not isinstance(pk_value, Mapping):
+            raise ValueError(
+                f"Composite PK requires a mapping per row; got {type(pk_value).__name__}"
+            )
+        missing = set(pk_fields) - set(pk_value.keys())
+        if missing:
+            raise ValueError(f"Missing PK fields in row: {sorted(missing)}")
+        inner = ", ".join(placeholder(len(params) + i) for i in range(len(pk_fields)))
+        groups.append(f"({inner})")
+        params.extend(pk_value[f] for f in pk_fields)
+
+    sql = f"DELETE FROM {table} WHERE ({pk_cols}) IN ({', '.join(groups)})"
+    return SqlQuery(sql=sql, params=params)
 
 
 _OPS = {
