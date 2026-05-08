@@ -18,6 +18,9 @@ class User(Row):
     email: str | None = None
 
 # Connect (driver inferred from URL scheme)
+#   postgresql+asyncpg://...   asyncpg + Postgres
+#   postgresql+psycopg://...   psycopg3 + Postgres
+#   sqlite+aiosqlite:///...    aiosqlite + SQLite
 db = await DB.from_url("postgresql+asyncpg://user@host/db")
 
 # Typed CRUD
@@ -53,6 +56,7 @@ users = await db.fetch_models(User, """
     SELECT u.* FROM users u JOIN orders o ON o.user_id = u.id
     WHERE o.created_at > $1
 """, since)
+top = await db.fetch_model(User, "SELECT * FROM users ORDER BY id LIMIT 1")  # Row | None
 
 # Untyped raw SQL (mirrors asyncpg)
 rows = await db.fetch("SELECT count(*) FROM events WHERE site_id = $1", site_id)
@@ -81,6 +85,28 @@ q = sql.compose("get", User, id=1, placeholder=lambda i: f"${i + 1}")
 `update` and `delete` use the value of every column in `__pk__` (default: `("id",)`) as the WHERE clause; override the class attribute for a composite or differently-named primary key. Add extra equality filters with `where={...}` for guarded updates: multi-tenant scoping like `where={"user_id": current_user}` is the canonical use case. Raw SQL is still the right tool when you need anything richer than equality.
 
 Use `Row.patch(**fields)` to build a partial Row that satisfies neither validation nor missing-required-field checks. It's the right shape when you want partial updates against a model with NOT NULL columns.
+
+## Typed errors
+
+Driver exceptions are mapped onto a small etchdb family so application code catches the same type regardless of the backend. The original driver exception is preserved as `__cause__`.
+
+```python
+from etchdb import (
+    EtchdbError,            # base for everything etchdb raises
+    IntegrityError,         # unique / FK / NOT NULL / check violation
+    UndefinedTableError,    # table referenced by a query does not exist
+    UndefinedColumnError,   # column referenced by a query does not exist
+    OperationalError,       # connection-level / driver-level failure
+)
+
+try:
+    await db.insert(User(id=1, name="Alice"))
+except IntegrityError as e:
+    log.warning("duplicate or constraint violation: %s", e)
+    # e.__cause__ is the original asyncpg / psycopg / sqlite3 exception
+```
+
+`except EtchdbError` catches every member of the family at once.
 
 ## Install
 
@@ -147,7 +173,7 @@ The design also targets AI-assisted development: predictable verbs, no metaclass
 
 ## Migrations
 
-Out of scope for v0.1. A small forward-only, file-based migration helper (no autogenerate, no rollback, no DAG) is planned for a later release. etchdb owns no schema state today, so any external tool slots in fine in the meantime: Alembic if you also use SQLAlchemy, dbmate or sqitch if you don't, or a few `db.execute` calls in your bootstrap path.
+Out of scope so far. A small forward-only, file-based migration helper (no autogenerate, no rollback, no DAG) is planned for a later release. etchdb owns no schema state today, so any external tool slots in fine in the meantime: Alembic if you also use SQLAlchemy, dbmate or sqitch if you don't, or a few `db.execute` calls in your bootstrap path.
 
 ## Built with AI assistance
 
