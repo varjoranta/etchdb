@@ -56,10 +56,10 @@ def select_one(
 ) -> SqlQuery:
     """Build a SELECT for at most one row matching `filters`.
 
-    Filters are joined with AND. A `None` value emits `IS NULL` rather
-    than `= NULL` so `get(User, deleted_at=None)` matches the rows you
-    expect. Pass no filters to fetch the first row in the table (mostly
-    useful for tests / single-row tables).
+    Filters are joined with AND. A `None` value emits `IS NULL`; a
+    list / tuple value emits `IN (...)`. Anything else binds as a
+    scalar `= $N`. Pass no filters to fetch the first row in the
+    table (mostly useful for tests / single-row tables).
     """
     table = _table_name(row_class)
     columns = ", ".join(row_class.model_fields)
@@ -84,8 +84,9 @@ def select_many(
 ) -> SqlQuery:
     """Build a SELECT for multiple rows.
 
-    Filters (keyword arguments) are joined with AND; a `None` value
-    emits `IS NULL`. `limit`, `offset`, and `order_by` are keyword-only.
+    Filters (keyword arguments) are joined with AND. `None` emits
+    `IS NULL`; list / tuple emits `IN (...)`; anything else binds as
+    `= $N`. `limit`, `offset`, and `order_by` are keyword-only.
     `limit` and `offset` are bound as parameters; `order_by` is
     interpolated as a raw SQL fragment, so do not pass user-controlled
     values to it.
@@ -388,18 +389,35 @@ def _where_clauses(
     placeholder: Callable[[int], str],
     start: int = 0,
 ) -> tuple[str, list[Any]]:
-    """Build a WHERE-clause body where None values become `IS NULL`.
+    """Build a WHERE-clause body. None becomes `IS NULL`; list/tuple
+    becomes `IN (...)`; everything else becomes `field = $N`.
 
-    Returns `(sql_body, values)`. `IS NULL` keys consume no placeholder,
-    so `values` may be shorter than `items`. `start` is the surrounding
-    parameter-list index at which this clause's first bound parameter
-    sits, for Postgres `$N` numbering when SET precedes WHERE.
+    Returns `(sql_body, values)`. `IS NULL` keys consume no
+    placeholder, so `values` may be shorter than `items`. `start` is
+    the surrounding parameter-list index at which this clause's first
+    bound parameter sits, for Postgres `$N` numbering when SET
+    precedes WHERE.
     """
     parts: list[str] = []
     values: list[Any] = []
     for field, value in items.items():
         if value is None:
             parts.append(f"{field} IS NULL")
+        elif isinstance(value, list | tuple):
+            if not value:
+                raise ValueError(
+                    f"empty list filter for {field!r}; an empty IN clause matches "
+                    f"nothing. Drop the filter, or branch on the empty case."
+                )
+            if any(v is None for v in value):
+                raise ValueError(
+                    f"None inside a list filter for {field!r} is ambiguous; SQL "
+                    f"IN does not match NULL. Use raw SQL for "
+                    f"`field IN (...) OR field IS NULL`."
+                )
+            ph_list = ", ".join(placeholder(start + len(values) + i) for i in range(len(value)))
+            parts.append(f"{field} IN ({ph_list})")
+            values.extend(value)
         else:
             parts.append(f"{field} = {placeholder(start + len(values))}")
             values.append(value)

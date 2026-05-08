@@ -192,6 +192,62 @@ def test_select_one_value_after_none_keeps_placeholder_numbering_pg():
     assert q.params == ["Alice"]
 
 
+def test_select_one_list_filter_emits_in_clause_pg():
+    q = sql.select_one(User, placeholder=pg, id=[1, 2, 3])
+
+    assert q.sql == "SELECT id, name, email FROM users WHERE id IN ($1, $2, $3) LIMIT 1"
+    assert q.params == [1, 2, 3]
+
+
+def test_select_one_tuple_filter_emits_in_clause_pg():
+    q = sql.select_one(User, placeholder=pg, id=(1, 2))
+
+    assert q.sql == "SELECT id, name, email FROM users WHERE id IN ($1, $2) LIMIT 1"
+    assert q.params == [1, 2]
+
+
+def test_select_one_single_element_list_filter_pg():
+    """A length-1 list still uses IN; harmless and consistent with
+    longer ones."""
+    q = sql.select_one(User, placeholder=pg, id=[7])
+
+    assert q.sql == "SELECT id, name, email FROM users WHERE id IN ($1) LIMIT 1"
+    assert q.params == [7]
+
+
+def test_select_one_in_clause_sqlite():
+    q = sql.select_one(User, placeholder=lite, id=[1, 2, 3])
+
+    assert q.sql == "SELECT id, name, email FROM users WHERE id IN (?, ?, ?) LIMIT 1"
+    assert q.params == [1, 2, 3]
+
+
+def test_select_one_mixed_scalar_in_and_isnull_pg():
+    """All three predicate shapes coexist; placeholder numbering
+    skips IS NULL fields and consumes one slot per IN element."""
+    q = sql.select_one(User, placeholder=pg, name="alice", id=[1, 2], email=None)
+
+    assert q.sql == (
+        "SELECT id, name, email FROM users "
+        "WHERE name = $1 AND id IN ($2, $3) AND email IS NULL LIMIT 1"
+    )
+    assert q.params == ["alice", 1, 2]
+
+
+def test_select_one_empty_list_filter_raises():
+    """An empty IN clause matches nothing; if the caller wanted that
+    they should drop the filter or branch around it."""
+    with pytest.raises(ValueError, match="empty list filter"):
+        sql.select_one(User, placeholder=pg, id=[])
+
+
+def test_select_one_none_in_list_filter_raises():
+    """SQL `IN (..., NULL)` does not match NULL rows; reject the
+    ambiguous shape rather than silently dropping the None."""
+    with pytest.raises(ValueError, match="None inside a list filter"):
+        sql.select_one(User, placeholder=pg, email=["a", None])
+
+
 # --- select_many -----------------------------------------------------
 
 
@@ -398,6 +454,24 @@ def test_update_with_returning_and_extra_where():
     q = sql.update(user, placeholder=pg, returning="*", where={"tenant_id": 5})
 
     assert q.sql == ("UPDATE users SET name = $1 WHERE id = $2 AND tenant_id = $3 RETURNING *")
+
+
+def test_update_where_list_emits_in_clause_pg():
+    """A list value in where= produces an IN clause AND'd onto the
+    PK predicate, useful for narrow multi-tenant scope guards."""
+    user = User(id=1, name="Alice B")
+    q = sql.update(user, placeholder=pg, where={"tenant_id": [10, 20]})
+
+    assert q.sql == ("UPDATE users SET name = $1 WHERE id = $2 AND tenant_id IN ($3, $4)")
+    assert q.params == ["Alice B", 1, 10, 20]
+
+
+def test_delete_where_list_emits_in_clause_pg():
+    user = User(id=1, name="Alice")
+    q = sql.delete(user, placeholder=pg, where={"tenant_id": [10, 20]})
+
+    assert q.sql == "DELETE FROM users WHERE id = $1 AND tenant_id IN ($2, $3)"
+    assert q.params == [1, 10, 20]
 
 
 def test_update_where_none_emits_is_null_pg():

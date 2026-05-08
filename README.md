@@ -28,6 +28,7 @@ alice = await db.insert(User(name="Alice"))           # alice.id is now populate
 user = await db.get(User, id=alice.id)                # one row or None
 users = await db.query(User)                          # list of rows
 no_email = await db.query(User, email=None)           # IS NULL, not = NULL
+recent = await db.query(User, id=[1, 5, 7])           # IN ($1, $2, $3)
 await db.update(User(id=alice.id, name="Alice B"))    # partial: email is preserved
 await db.delete(alice)
 
