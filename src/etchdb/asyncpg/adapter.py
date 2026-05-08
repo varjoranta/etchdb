@@ -52,6 +52,21 @@ def _map_exception(exc: BaseException) -> errors.EtchdbError | None:
 _wrap_errors = errors.wrap(_map_exception)
 
 
+def _rowcount_from_status(status: str) -> int:
+    """Extract the affected-row count from an asyncpg command tag.
+
+    DML tags ('UPDATE 5', 'DELETE 3', 'INSERT 0 5') end in the
+    count; DDL tags ('CREATE TABLE') end in a non-numeric word.
+    Returns -1 in the latter case to mirror the psycopg / sqlite3
+    'no rowcount available' sentinel.
+    """
+    tail = status.rsplit(" ", 1)[-1]
+    try:
+        return int(tail)
+    except ValueError:
+        return -1
+
+
 class AsyncpgAdapter(AdapterBase):
     """AdapterBase implementation backed by an asyncpg pool.
 
@@ -90,9 +105,9 @@ class AsyncpgAdapter(AdapterBase):
         pool = await asyncpg.create_pool(url, init=_init_codecs)
         return cls(pool, owns_pool=True)
 
-    async def execute(self, sql: str, *params: Any) -> Any:
+    async def execute(self, sql: str, *params: Any) -> int:
         async with _wrap_errors(), self._pool.acquire() as conn:
-            return await conn.execute(sql, *params)
+            return _rowcount_from_status(await conn.execute(sql, *params))
 
     async def fetch(self, sql: str, *params: Any) -> list[dict[str, Any]]:
         async with _wrap_errors(), self._pool.acquire() as conn:
@@ -128,9 +143,9 @@ class _AsyncpgConnAdapter(AdapterBase):
     def placeholder(i: int) -> str:
         return f"${i + 1}"
 
-    async def execute(self, sql: str, *params: Any) -> Any:
+    async def execute(self, sql: str, *params: Any) -> int:
         async with _wrap_errors():
-            return await self._conn.execute(sql, *params)
+            return _rowcount_from_status(await self._conn.execute(sql, *params))
 
     async def fetch(self, sql: str, *params: Any) -> list[dict[str, Any]]:
         async with _wrap_errors():

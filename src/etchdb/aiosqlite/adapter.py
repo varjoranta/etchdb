@@ -90,10 +90,10 @@ class AiosqliteAdapter(AdapterBase):
         conn.row_factory = aiosqlite.Row
         return cls(conn, owns_conn=True)
 
-    async def execute(self, sql: str, *params: Any) -> Any:
-        async with _wrap_errors():
-            await self._conn.execute(sql, params)
+    async def execute(self, sql: str, *params: Any) -> int:
+        async with _wrap_errors(), self._conn.execute(sql, params) as cursor:
             await self._conn.commit()
+            return cursor.rowcount
 
     async def fetch(self, sql: str, *params: Any) -> list[dict[str, Any]]:
         async with _wrap_errors(), self._conn.execute(sql, params) as cursor:
@@ -143,9 +143,9 @@ class _AiosqliteTxAdapter(AdapterBase):
     def placeholder(i: int) -> str:
         return "?"
 
-    async def execute(self, sql: str, *params: Any) -> Any:
-        async with _wrap_errors():
-            await self._conn.execute(sql, params)
+    async def execute(self, sql: str, *params: Any) -> int:
+        async with _wrap_errors(), self._conn.execute(sql, params) as cursor:
+            return cursor.rowcount
 
     async def fetch(self, sql: str, *params: Any) -> list[dict[str, Any]]:
         async with _wrap_errors(), self._conn.execute(sql, params) as cursor:

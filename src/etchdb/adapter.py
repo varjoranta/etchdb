@@ -24,7 +24,15 @@ class AdapterBase(ABC):
         ...
 
     @abstractmethod
-    async def execute(self, sql: str, *params: Any) -> Any: ...
+    async def execute(self, sql: str, *params: Any) -> int:
+        """Execute a statement and return the affected-row count.
+
+        Returns the number of rows the statement affected (DELETE,
+        UPDATE, INSERT counts), or `-1` for statements that do not
+        report a rowcount (CREATE TABLE, ALTER TABLE, etc.). The `-1`
+        sentinel mirrors psycopg's and sqlite3's native convention.
+        """
+        ...
 
     @abstractmethod
     async def fetch(self, sql: str, *params: Any) -> list[dict[str, Any]]: ...

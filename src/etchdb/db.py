@@ -84,7 +84,14 @@ class DB:
 
         return cls(adapter)
 
-    async def execute(self, sql: str, *params: Any) -> Any:
+    async def execute(self, sql: str, *params: Any) -> int:
+        """Execute a statement and return the affected-row count.
+
+        Returns the rowcount for DML (INSERT / UPDATE / DELETE), or
+        `-1` for statements that do not report a count (DDL, CREATE
+        TABLE, etc.). Normalised across asyncpg, psycopg, and
+        aiosqlite so the same call site works on every backend.
+        """
         return await self._adapter.execute(sql, *params)
 
     async def fetch(self, sql: str, *params: Any) -> list[dict[str, Any]]:

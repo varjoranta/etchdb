@@ -115,9 +115,10 @@ class PsycopgAdapter(AdapterBase):
     # discourage SQL injection at the type level; etchdb passes runtime
     # strings here (the SqlQuery / raw-SQL contract). The injection
     # guard is the `*params` substitution, not the query type.
-    async def execute(self, sql: str, *params: Any) -> Any:
+    async def execute(self, sql: str, *params: Any) -> int:
         async with _wrap_errors(), self._cursor() as cur:
             await cur.execute(cast(Any, sql), params)
+            return cur.rowcount
 
     async def fetch(self, sql: str, *params: Any) -> list[dict[str, Any]]:
         async with _wrap_errors(), self._cursor() as cur:
@@ -163,9 +164,10 @@ class _PsycopgConnAdapter(AdapterBase):
         async with psycopg.AsyncRawCursor(self._conn, row_factory=row_factory) as cur:
             yield cur
 
-    async def execute(self, sql: str, *params: Any) -> Any:
+    async def execute(self, sql: str, *params: Any) -> int:
         async with _wrap_errors(), self._cursor() as cur:
             await cur.execute(cast(Any, sql), params)
+            return cur.rowcount
 
     async def fetch(self, sql: str, *params: Any) -> list[dict[str, Any]]:
         async with _wrap_errors(), self._cursor() as cur:

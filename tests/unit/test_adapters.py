@@ -8,6 +8,7 @@ fail loudly when their backing driver is unavailable.
 from etchdb.adapter import AdapterBase
 from etchdb.aiosqlite import AiosqliteAdapter
 from etchdb.asyncpg import AsyncpgAdapter
+from etchdb.asyncpg.adapter import _rowcount_from_status
 from etchdb.psycopg import PsycopgAdapter
 
 
@@ -35,3 +36,21 @@ def test_adapters_inherit_adapter_base():
     assert issubclass(AsyncpgAdapter, AdapterBase)
     assert issubclass(AiosqliteAdapter, AdapterBase)
     assert issubclass(PsycopgAdapter, AdapterBase)
+
+
+def test_asyncpg_rowcount_from_status_dml():
+    """asyncpg returns command tags like 'UPDATE 5' / 'DELETE 3' /
+    'INSERT 0 5' (oid 0, then count). The trailing token is the
+    affected-row count."""
+    assert _rowcount_from_status("UPDATE 5") == 5
+    assert _rowcount_from_status("DELETE 3") == 3
+    assert _rowcount_from_status("INSERT 0 7") == 7
+    assert _rowcount_from_status("UPDATE 0") == 0
+
+
+def test_asyncpg_rowcount_from_status_ddl_returns_minus_one():
+    """DDL command tags have no numeric tail; -1 is the cross-driver
+    'no rowcount available' sentinel (mirroring psycopg / sqlite3)."""
+    assert _rowcount_from_status("CREATE TABLE") == -1
+    assert _rowcount_from_status("DROP TABLE") == -1
+    assert _rowcount_from_status("BEGIN") == -1
