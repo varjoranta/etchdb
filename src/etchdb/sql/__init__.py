@@ -200,15 +200,26 @@ def insert_many(
     """
     if not rows:
         raise ValueError("insert_many requires at least one row")
+    if on_conflict not in (None, "ignore"):
+        raise ValueError(
+            f"on_conflict={on_conflict!r} is not supported. "
+            f"Pass None or 'ignore'; for richer conflict handling drop to raw SQL."
+        )
 
     first = rows[0]
+    first_cls = type(first)
     table = _table_name(first)
-    fields = [f for f in type(first).model_fields if f in first.model_fields_set]
+    fields = [f for f in first_cls.model_fields if f in first.model_fields_set]
     if not fields:
         raise ValueError("insert_many requires at least one field set on the first row")
 
     expected = first.model_fields_set
     for i, row in enumerate(rows):
+        if type(row) is not first_cls:
+            raise ValueError(
+                f"insert_many: all rows must be the same Row subclass; "
+                f"row[0] is {first_cls.__name__}, row[{i}] is {type(row).__name__}."
+            )
         if row.model_fields_set != expected:
             raise ValueError(
                 f"insert_many: all rows must share model_fields_set; "

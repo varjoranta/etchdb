@@ -632,6 +632,33 @@ def test_insert_many_mixed_shapes_raises():
         sql.insert_many(rows, placeholder=pg)
 
 
+def test_insert_many_mixed_row_classes_raises():
+    """Two Row subclasses with overlapping field names would otherwise
+    silently insert into the first row's table using the first row's
+    field layout. Reject the mismatch up front."""
+
+    class Customer(Row):
+        __table__ = "customers"
+        id: int
+        name: str
+
+    rows = [User(id=1, name="A"), Customer(id=2, name="B")]
+    with pytest.raises(ValueError, match="same Row subclass"):
+        sql.insert_many(rows, placeholder=pg)
+
+
+def test_insert_many_unknown_on_conflict_raises():
+    """The Literal type only enforces statically; a typo at runtime
+    would otherwise be silently dropped, leaving the duplicate-key
+    handling expectation unmet."""
+    from typing import Any
+
+    rows = [User(id=1, name="A")]
+    bad: Any = "ignour"
+    with pytest.raises(ValueError, match="on_conflict"):
+        sql.insert_many(rows, placeholder=pg, on_conflict=bad)
+
+
 def test_delete_many_single_pk_pg():
     q = sql.delete_many(User, [1, 2, 3], placeholder=pg)
 
