@@ -48,6 +48,42 @@ async def test_insert_many_without_on_conflict_raises_on_duplicate(db: DB):
         await db.insert_many(rows)
 
 
+async def test_insert_many_on_conflict_upsert_overwrites(db: DB):
+    """Upsert: existing rows take the new values for every non-PK
+    column; fresh rows are inserted as usual."""
+    await db.insert(User(id=1, name="original", email="orig@x"))
+    await db.insert(User(id=2, name="alice"))
+
+    rows = [
+        User(id=1, name="updated", email="new@x"),
+        User(id=3, name="fresh", email="fresh@x"),
+    ]
+    await db.insert_many(rows, on_conflict="upsert")
+
+    fetched = await db.query(User, order_by="id")
+    assert [(u.id, u.name, u.email) for u in fetched] == [
+        (1, "updated", "new@x"),
+        (2, "alice", None),
+        (3, "fresh", "fresh@x"),
+    ]
+
+
+async def test_insert_with_on_conflict_upsert_returns_db_view(db: DB):
+    """Single-row upsert via db.insert; the returned Row reflects the
+    DB's view (RETURNING * fires whether the row was inserted or
+    updated)."""
+    await db.insert(User(id=1, name="alice", email="alice@x"))
+
+    returned = await db.insert(
+        User(id=1, name="alice b", email="newer@x"),
+        on_conflict="upsert",
+    )
+
+    assert returned.id == 1
+    assert returned.name == "alice b"
+    assert returned.email == "newer@x"
+
+
 async def test_insert_many_chunks_large_batches(db: DB, monkeypatch):
     """Monkeypatch the parameter limit so we can prove chunking happens
     without writing 32k+ rows to the DB. With limit=4 and 2 cols/row,

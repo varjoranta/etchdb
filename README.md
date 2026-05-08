@@ -44,7 +44,12 @@ await db.update(User.patch(id=alice.id, name="Alice B"))
 
 # Bulk insert / delete (chunked at the driver's parameter limit).
 await db.insert_many([User(name=n) for n in names], on_conflict="ignore")
+await db.insert_many(rows, on_conflict="upsert")    # ON CONFLICT (pk) DO UPDATE SET ...
 await db.delete_many(User, [1, 2, 3])
+
+# Upsert via single insert: same rules, returns the DB's view.
+alice = await db.insert(User(id=1, name="Alice", email="a@x"),
+                        on_conflict="upsert")
 
 # Stream every matching row (paginated, won't load the whole table at once)
 # Uses offset pagination, so cost scales O(N**2) on huge tables; for those,

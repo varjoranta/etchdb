@@ -182,8 +182,17 @@ class DB:
                 return
             offset += batch_size
 
-    async def insert(self, row: Row) -> Row:
-        q = sql.insert(row, placeholder=self._adapter.placeholder)
+    async def insert(self, row: Row, *, on_conflict: sql._OnConflict = None) -> Row:
+        """Insert `row` and return the DB's view (RETURNING *).
+
+        `on_conflict="ignore"` appends `ON CONFLICT DO NOTHING`; if a
+        conflict happens, RETURNING is empty and the input `row` is
+        returned unchanged (so server-defaults are NOT populated).
+        `on_conflict="upsert"` appends `ON CONFLICT (<pk>) DO UPDATE
+        SET <non-pk> = excluded.<non-pk>`, so the returned row always
+        reflects the DB's view.
+        """
+        q = sql.insert(row, placeholder=self._adapter.placeholder, on_conflict=on_conflict)
         result = await self._adapter.fetchrow(q.sql, *q.params)
         return _hydrate(row, result) or row
 
@@ -198,7 +207,9 @@ class DB:
         All rows must share `model_fields_set`. Long batches are
         chunked at the driver's parameter limit so a single call can
         cover thousands of rows. `on_conflict="ignore"` appends
-        `ON CONFLICT DO NOTHING`. Empty `rows` is a no-op."""
+        `ON CONFLICT DO NOTHING`; `on_conflict="upsert"` appends
+        `ON CONFLICT (<pk>) DO UPDATE SET <non-pk> = excluded.<non-pk>`.
+        Empty `rows` is a no-op."""
         if not rows:
             return
         cols_per_row = sum(1 for f in type(rows[0]).model_fields if f in rows[0].model_fields_set)

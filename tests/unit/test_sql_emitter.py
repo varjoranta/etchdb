@@ -121,6 +121,44 @@ def test_insert_no_fields_uses_default_values_sqlite():
     assert q.params == []
 
 
+def test_insert_with_on_conflict_ignore_pg():
+    user = User(id=1, name="Alice")
+    q = sql.insert(user, placeholder=pg, on_conflict="ignore")
+
+    assert q.sql == (
+        "INSERT INTO users (id, name) VALUES ($1, $2) ON CONFLICT DO NOTHING RETURNING *"
+    )
+
+
+def test_insert_with_on_conflict_upsert_pg():
+    user = User(id=1, name="Alice", email="alice@x")
+    q = sql.insert(user, placeholder=pg, on_conflict="upsert")
+
+    assert q.sql == (
+        "INSERT INTO users (id, name, email) VALUES ($1, $2, $3) "
+        "ON CONFLICT (id) DO UPDATE SET name = excluded.name, email = excluded.email "
+        "RETURNING *"
+    )
+
+
+def test_insert_with_on_conflict_upsert_pk_only_raises():
+    """Single insert: same PK-only check as insert_many; an upsert
+    with nothing to update would be an empty SET clause."""
+    user = User(id=1, name="Alice")  # name and id; if we drop name, only id remains
+    user_pk_only = type(user).model_construct(id=1)
+    with pytest.raises(ValueError, match="at least one non-PK field"):
+        sql.insert(user_pk_only, placeholder=pg, on_conflict="upsert")
+
+
+def test_insert_unknown_on_conflict_raises():
+    from typing import Any
+
+    user = User(id=1, name="Alice")
+    bad: Any = "merge"
+    with pytest.raises(ValueError, match="on_conflict"):
+        sql.insert(user, placeholder=pg, on_conflict=bad)
+
+
 # --- select_one ------------------------------------------------------
 
 
@@ -691,6 +729,35 @@ def test_insert_many_with_on_conflict_ignore():
     q = sql.insert_many(rows, placeholder=pg, on_conflict="ignore")
 
     assert q.sql.endswith("ON CONFLICT DO NOTHING")
+
+
+def test_insert_many_with_on_conflict_upsert_pg():
+    """Upsert: every non-PK column from `model_fields_set` is written
+    via excluded.col; PK columns become the conflict target."""
+    rows = [User(id=1, name="A", email="a@x"), User(id=2, name="B", email="b@x")]
+    q = sql.insert_many(rows, placeholder=pg, on_conflict="upsert")
+
+    assert q.sql == (
+        "INSERT INTO users (id, name, email) "
+        "VALUES ($1, $2, $3), ($4, $5, $6) "
+        "ON CONFLICT (id) DO UPDATE SET name = excluded.name, email = excluded.email"
+    )
+
+
+def test_insert_many_with_on_conflict_upsert_composite_pk_pg():
+    """Composite PK: both columns appear in the conflict target."""
+    rows = [UserRole(user_id=1, role_id=10, note="hi")]
+    q = sql.insert_many(rows, placeholder=pg, on_conflict="upsert")
+
+    assert q.sql.endswith("ON CONFLICT (user_id, role_id) DO UPDATE SET note = excluded.note")
+
+
+def test_insert_many_with_on_conflict_upsert_pk_only_raises():
+    """Upsert with no non-PK columns to update would emit an empty
+    SET; that almost certainly means the caller wanted 'ignore'."""
+    rows = [UserRole(user_id=1, role_id=10)]
+    with pytest.raises(ValueError, match="at least one non-PK field"):
+        sql.insert_many(rows, placeholder=pg, on_conflict="upsert")
 
 
 def test_insert_many_empty_raises():

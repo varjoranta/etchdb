@@ -12,7 +12,7 @@ from typing import Any, Literal
 from etchdb.query import SqlQuery
 from etchdb.row import Row
 
-_OnConflict = Literal["ignore"] | None
+_OnConflict = Literal["ignore", "upsert"] | None
 
 
 def insert(
@@ -20,6 +20,7 @@ def insert(
     *,
     placeholder: Callable[[int], str],
     returning: str | list[str] | None = "*",
+    on_conflict: _OnConflict = None,
 ) -> SqlQuery:
     """Build an INSERT for `row`, emitting only fields in `model_fields_set`.
 
@@ -27,12 +28,20 @@ def insert(
     (or sequence). An explicit `None` is treated as set. With nothing
     set, emits `INSERT INTO ... DEFAULT VALUES`. `returning="*"` by
     default; pass `None` or a column list to override.
+
+    `on_conflict="ignore"` appends `ON CONFLICT DO NOTHING`.
+    `on_conflict="upsert"` appends `ON CONFLICT (<pk>) DO UPDATE SET
+    <non-pk> = excluded.<non-pk>`, so the row is inserted or updated
+    in place. Both work on Postgres and SQLite (3.24+); upsert with
+    RETURNING also requires SQLite 3.35+.
     """
+    cls = type(row)
     table = _table_name(row)
-    fields = [f for f in type(row).model_fields if f in row.model_fields_set]
+    fields = [f for f in cls.model_fields if f in row.model_fields_set]
 
     if not fields:
         sql = f"INSERT INTO {table} DEFAULT VALUES"
+        sql += _on_conflict_clause(cls, fields, on_conflict)
         if returning is not None:
             sql += f" RETURNING {_format_columns(returning)}"
         return SqlQuery(sql=sql, params=[])
@@ -42,6 +51,7 @@ def insert(
     placeholders = ", ".join(placeholder(i) for i in range(len(fields)))
 
     sql = f"INSERT INTO {table} ({columns}) VALUES ({placeholders})"
+    sql += _on_conflict_clause(cls, fields, on_conflict)
     if returning is not None:
         sql += f" RETURNING {_format_columns(returning)}"
 
@@ -192,20 +202,16 @@ def insert_many(
     """Build a multi-VALUES INSERT for `rows`.
 
     All rows must have identical `model_fields_set`; mixed shapes
-    raise. `on_conflict="ignore"` appends `ON CONFLICT DO NOTHING`,
-    which both Postgres and SQLite (3.24+) accept. For richer conflict
-    handling, drop to raw SQL.
+    raise. `on_conflict="ignore"` appends `ON CONFLICT DO NOTHING`;
+    `on_conflict="upsert"` appends `ON CONFLICT (<pk>) DO UPDATE SET
+    <non-pk> = excluded.<non-pk>`. Both work on Postgres and SQLite
+    (3.24+). For richer conflict handling, drop to raw SQL.
 
     The DB facade chunks long batches at the driver's parameter limit
     before calling this. This emitter builds one query per chunk.
     """
     if not rows:
         raise ValueError("insert_many requires at least one row")
-    if on_conflict not in (None, "ignore"):
-        raise ValueError(
-            f"on_conflict={on_conflict!r} is not supported. "
-            f"Pass None or 'ignore'; for richer conflict handling drop to raw SQL."
-        )
 
     first = rows[0]
     first_cls = type(first)
@@ -238,8 +244,7 @@ def insert_many(
         params.extend(getattr(row, f) for f in fields)
 
     sql = f"INSERT INTO {table} ({columns}) VALUES {', '.join(value_groups)}"
-    if on_conflict == "ignore":
-        sql += " ON CONFLICT DO NOTHING"
+    sql += _on_conflict_clause(first_cls, fields, on_conflict)
 
     return SqlQuery(sql=sql, params=params)
 
@@ -327,6 +332,36 @@ def compose(
 
 
 # --- helpers ----------------------------------------------------------
+
+
+def _on_conflict_clause(
+    model: type[Row],
+    set_fields: list[str],
+    mode: _OnConflict,
+) -> str:
+    """Render the ON CONFLICT tail for `insert` / `insert_many`.
+
+    `set_fields` is the column list emitted by the surrounding INSERT
+    in declaration order. For `mode="upsert"`, every non-PK column
+    from that list is written via `excluded.col`; PK columns supply
+    the conflict target.
+    """
+    if mode is None:
+        return ""
+    if mode == "ignore":
+        return " ON CONFLICT DO NOTHING"
+    if mode == "upsert":
+        pk = list(model.__pk__)
+        non_pk = [f for f in set_fields if f not in pk]
+        if not non_pk:
+            raise ValueError(
+                "on_conflict='upsert' needs at least one non-PK field set; "
+                "this row has only PK columns. Use on_conflict='ignore' instead."
+            )
+        target = ", ".join(pk)
+        updates = ", ".join(f"{f} = excluded.{f}" for f in non_pk)
+        return f" ON CONFLICT ({target}) DO UPDATE SET {updates}"
+    raise ValueError(f"on_conflict={mode!r} is not supported. Pass None, 'ignore', or 'upsert'.")
 
 
 def _pk_where_items(row: Row, op: str, where: Mapping[str, Any] | None) -> dict[str, Any]:
