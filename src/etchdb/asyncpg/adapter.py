@@ -2,6 +2,7 @@
 
 from __future__ import annotations
 
+import json
 from collections.abc import AsyncIterator
 from contextlib import asynccontextmanager
 from typing import Any
@@ -10,6 +11,22 @@ import asyncpg
 
 from etchdb import errors
 from etchdb.adapter import AdapterBase
+from etchdb.codecs import json_dumps
+
+
+async def _init_codecs(conn: asyncpg.Connection) -> None:
+    """Pool `init=` callback: register a JSONB codec on every new
+    connection so `dict | list` round-trips with UUID, datetime, Enum,
+    and Pydantic BaseModel encoded transparently. asyncpg returns JSONB
+    as `str` without this; with it, JSONB columns come back as Python
+    objects directly."""
+    await conn.set_type_codec(
+        "jsonb",
+        encoder=json_dumps,
+        decoder=json.loads,
+        schema="pg_catalog",
+        format="text",
+    )
 
 
 def _map_exception(exc: BaseException) -> errors.EtchdbError | None:
@@ -62,9 +79,13 @@ class AsyncpgAdapter(AdapterBase):
     async def from_url(cls, url: str) -> AsyncpgAdapter:
         """Create an asyncpg pool from `url` and wrap it.
 
-        etchdb owns the pool; `close()` will close it.
+        etchdb owns the pool; `close()` will close it. The pool is
+        initialised with a JSONB codec that handles UUID, datetime,
+        Enum, and Pydantic BaseModel transparently. Users wanting a
+        pristine pool with no codec setup should construct the pool
+        themselves and use `from_pool`.
         """
-        pool = await asyncpg.create_pool(url)
+        pool = await asyncpg.create_pool(url, init=_init_codecs)
         return cls(pool, owns_pool=True)
 
     async def execute(self, sql: str, *params: Any) -> Any:

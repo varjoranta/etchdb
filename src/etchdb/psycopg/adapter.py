@@ -12,11 +12,37 @@ from contextlib import asynccontextmanager
 from typing import Any, cast
 
 import psycopg
+import psycopg.types.json
 from psycopg.rows import AsyncRowFactory, dict_row, tuple_row
+from psycopg.types.json import JsonbDumper
 from psycopg_pool import AsyncConnectionPool
 
 from etchdb import errors
 from etchdb.adapter import AdapterBase
+from etchdb.codecs import json_dumps
+
+
+class _DictAsJsonbDumper(JsonbDumper):
+    """Make raw `dict` and `list` round-trip as JSONB.
+
+    psycopg auto-decodes JSONB to dict/list natively, but with our
+    libpq-native `$N` placeholders it has no way to know a Python dict
+    should become jsonb without an explicit dumper. JsonbDumper handles
+    raw objects via its `_dumps` attribute; we point it at `json_dumps`
+    so the same encoder handles both `Jsonb()` wrappers and raw dicts.
+    """
+
+    _dumps = staticmethod(json_dumps)
+
+
+async def _init_codecs(conn: psycopg.AsyncConnection) -> None:
+    """Pool `configure=` callback: encode UUID, datetime, Enum,
+    Pydantic BaseModel and friends in JSONB, and auto-adapt raw
+    `dict` / `list` parameters as jsonb so application code doesn't
+    need explicit `Jsonb()` wrapping."""
+    psycopg.types.json.set_json_dumps(json_dumps, conn)
+    conn.adapters.register_dumper(dict, _DictAsJsonbDumper)
+    conn.adapters.register_dumper(list, _DictAsJsonbDumper)
 
 
 def _map_exception(exc: BaseException) -> errors.EtchdbError | None:
@@ -63,9 +89,13 @@ class PsycopgAdapter(AdapterBase):
     async def from_url(cls, url: str) -> PsycopgAdapter:
         """Open a psycopg AsyncConnectionPool against `url` and wrap it.
 
-        etchdb owns the pool; `close()` will close it.
+        etchdb owns the pool; `close()` will close it. The pool is
+        configured with a JSON encoder that handles UUID, datetime,
+        Enum, and Pydantic BaseModel transparently. Users wanting a
+        pristine pool with no codec setup should construct the pool
+        themselves and use `from_pool`.
         """
-        pool = AsyncConnectionPool(url, open=False)
+        pool = AsyncConnectionPool(url, open=False, configure=_init_codecs)
         await pool.open()
         return cls(pool, owns_pool=True)
 

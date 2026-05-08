@@ -92,11 +92,7 @@ from etchdb.asyncpg import AsyncpgAdapter     # requires asyncpg
 db = DB(AsyncpgAdapter.from_pool(my_pool))
 ```
 
-`from_url` keeps the construction surface tiny. For pool-init concerns
-(pgvector tuning, JSONB / ENUM codec registration, custom `min_size` /
-`max_size`), construct the pool yourself and pass it via `from_pool`.
-Example, registering a Postgres ENUM as a Python `str` via asyncpg's
-`set_type_codec`:
+`from_url` registers a JSONB codec on every connection so `dict` and `list` parameters round-trip with `UUID`, `datetime`, `Enum`, and Pydantic `BaseModel` values handled transparently. JSONB columns come back as Python objects directly: no `json.loads` at the call site, no manual `json.dumps` to insert. For pool-init concerns beyond that (pgvector tuning, custom ENUM codec, custom `min_size` / `max_size`), construct the pool yourself and pass it via `from_pool`. Example, registering a Postgres ENUM as a Python `str` via asyncpg's `set_type_codec`:
 
 ```python
 import asyncpg
