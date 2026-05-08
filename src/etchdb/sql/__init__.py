@@ -56,19 +56,21 @@ def select_one(
 ) -> SqlQuery:
     """Build a SELECT for at most one row matching `filters`.
 
-    Filters are joined with AND. Pass no filters to fetch the first row
-    in the table (mostly useful for tests / single-row tables).
+    Filters are joined with AND. A `None` value emits `IS NULL` rather
+    than `= NULL` so `get(User, deleted_at=None)` matches the rows you
+    expect. Pass no filters to fetch the first row in the table (mostly
+    useful for tests / single-row tables).
     """
     table = _table_name(row_class)
     columns = ", ".join(row_class.model_fields)
 
-    where_sql = _eq_clauses(list(filters), placeholder=placeholder)
+    where_sql, params = _where_clauses(filters, placeholder=placeholder)
     sql = f"SELECT {columns} FROM {table}"
     if where_sql:
         sql += f" WHERE {where_sql}"
     sql += " LIMIT 1"
 
-    return SqlQuery(sql=sql, params=list(filters.values()))
+    return SqlQuery(sql=sql, params=params)
 
 
 def select_many(
@@ -82,16 +84,16 @@ def select_many(
 ) -> SqlQuery:
     """Build a SELECT for multiple rows.
 
-    Filters (keyword arguments) are joined with AND. `limit`, `offset`,
-    and `order_by` are keyword-only. `limit` and `offset` are bound as
-    parameters; `order_by` is interpolated as a raw SQL fragment, so do
-    not pass user-controlled values to it.
+    Filters (keyword arguments) are joined with AND; a `None` value
+    emits `IS NULL`. `limit`, `offset`, and `order_by` are keyword-only.
+    `limit` and `offset` are bound as parameters; `order_by` is
+    interpolated as a raw SQL fragment, so do not pass user-controlled
+    values to it.
     """
     table = _table_name(row_class)
     columns = ", ".join(row_class.model_fields)
 
-    where_sql = _eq_clauses(list(filters), placeholder=placeholder)
-    params: list[Any] = list(filters.values())
+    where_sql, params = _where_clauses(filters, placeholder=placeholder)
 
     sql = f"SELECT {columns} FROM {table}"
     if where_sql:
@@ -120,9 +122,10 @@ def update(
     Only fields in `model_fields_set` go into the SET clause, giving
     partial-update semantics: columns the caller didn't touch are
     preserved. WHERE uses every field in `__pk__`, AND'd with any
-    extra equality filters from `where=`. The common multi-tenant
-    pattern is `update(row, where={"user_id": current_user_id})` so
-    the update is atomic with the ownership check.
+    extra equality filters from `where=`; a `None` in `where=` emits
+    `IS NULL`. The common multi-tenant pattern is
+    `update(row, where={"user_id": current_user_id})` so the update is
+    atomic with the ownership check.
 
     Raises ValueError if any PK field is unset, if no non-PK field is
     set, or if `where=` keys overlap with `__pk__`. Pass `returning="*"`
@@ -130,7 +133,7 @@ def update(
     """
     table = _table_name(row)
     pk_set = set(row.__pk__)
-    where_fields, where_values = _pk_where(row, "update", where)
+    where_items = _pk_where_items(row, "update", where)
 
     set_fields = [
         f for f in type(row).model_fields if f in row.model_fields_set and f not in pk_set
@@ -139,7 +142,9 @@ def update(
         raise ValueError(f"{type(row).__name__} has no non-PK fields to update")
 
     set_sql = _eq_clauses(set_fields, placeholder=placeholder, sep=", ")
-    where_sql = _eq_clauses(where_fields, placeholder=placeholder, start=len(set_fields))
+    where_sql, where_values = _where_clauses(
+        where_items, placeholder=placeholder, start=len(set_fields)
+    )
 
     set_values = [getattr(row, f) for f in set_fields]
 
@@ -157,15 +162,16 @@ def delete(
     where: Mapping[str, Any] | None = None,
 ) -> SqlQuery:
     """Build a DELETE for `row` keyed by its primary key, optionally
-    AND'd with extra equality filters from `where=`.
+    AND'd with extra equality filters from `where=`. A `None` in
+    `where=` emits `IS NULL`.
 
     Raises ValueError if any PK field is unset (no row to identify),
     or if `where=` keys overlap with `__pk__`.
     """
     table = _table_name(row)
-    where_fields, where_values = _pk_where(row, "delete", where)
+    where_items = _pk_where_items(row, "delete", where)
 
-    where_sql = _eq_clauses(where_fields, placeholder=placeholder)
+    where_sql, where_values = _where_clauses(where_items, placeholder=placeholder)
     sql = f"DELETE FROM {table} WHERE {where_sql}"
     return SqlQuery(sql=sql, params=where_values)
 
@@ -305,14 +311,12 @@ def compose(
 # --- helpers ----------------------------------------------------------
 
 
-def _pk_where(row: Row, op: str, where: Mapping[str, Any] | None) -> tuple[list[str], list[Any]]:
-    """Validate and build the WHERE field+value lists for `update`/`delete`.
+def _pk_where_items(row: Row, op: str, where: Mapping[str, Any] | None) -> dict[str, Any]:
+    """Validate PK and merge it with `where=` into the WHERE filter dict.
 
-    Asserts every PK field is set on `row` (else `WHERE id = NULL`
-    silently matches nothing) and that `where=` does not re-specify a
-    PK field (else `id = $1 AND id = $2` would either confuse the
-    reader or match nothing). Returns ordered (field_names, values),
-    PK first, `where=` second.
+    Asserts every PK field is set on `row` and that `where=` does not
+    re-specify a PK field. Returns `{**pk_values, **where}` in PK-first
+    order so placeholder numbering is stable.
     """
     unset_pk = [f for f in row.__pk__ if f not in row.model_fields_set]
     if unset_pk:
@@ -327,13 +331,10 @@ def _pk_where(row: Row, op: str, where: Mapping[str, Any] | None) -> tuple[list[
                 f"where= keys overlap with __pk__: {sorted(overlap)}. "
                 f"PK fields are already in WHERE; remove them from where=."
             )
-
-    fields = list(row.__pk__)
-    values: list[Any] = [getattr(row, f) for f in row.__pk__]
+    items: dict[str, Any] = {f: getattr(row, f) for f in row.__pk__}
     if where:
-        fields.extend(where)
-        values.extend(where.values())
-    return fields, values
+        items.update(where)
+    return items
 
 
 def _table_name(row_or_class: Row | type[Row]) -> str:
@@ -362,6 +363,30 @@ def _eq_clauses(
     if not fields:
         return ""
     return sep.join(f"{f} = {placeholder(start + i)}" for i, f in enumerate(fields))
+
+
+def _where_clauses(
+    items: Mapping[str, Any],
+    *,
+    placeholder: Callable[[int], str],
+    start: int = 0,
+) -> tuple[str, list[Any]]:
+    """Build a WHERE-clause body where None values become `IS NULL`.
+
+    Returns `(sql_body, values)`. `IS NULL` keys consume no placeholder,
+    so `values` may be shorter than `items`. `start` is the surrounding
+    parameter-list index at which this clause's first bound parameter
+    sits, for Postgres `$N` numbering when SET precedes WHERE.
+    """
+    parts: list[str] = []
+    values: list[Any] = []
+    for field, value in items.items():
+        if value is None:
+            parts.append(f"{field} IS NULL")
+        else:
+            parts.append(f"{field} = {placeholder(start + len(values))}")
+            values.append(value)
+    return " AND ".join(parts), values
 
 
 def _format_columns(cols: str | list[str]) -> str:

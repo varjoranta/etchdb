@@ -159,6 +159,39 @@ def test_select_one_sqlite_multiple_filters():
     assert q.params == ["Alice", "alice@example.com"]
 
 
+def test_select_one_none_filter_emits_is_null_pg():
+    """A None value must produce `IS NULL`, not `= NULL` (which silently
+    matches nothing in SQL). No placeholder is consumed."""
+    q = sql.select_one(User, placeholder=pg, email=None)
+
+    assert q.sql == "SELECT id, name, email FROM users WHERE email IS NULL LIMIT 1"
+    assert q.params == []
+
+
+def test_select_one_none_filter_emits_is_null_sqlite():
+    q = sql.select_one(User, placeholder=lite, email=None)
+
+    assert q.sql == "SELECT id, name, email FROM users WHERE email IS NULL LIMIT 1"
+    assert q.params == []
+
+
+def test_select_one_mixed_none_and_value_filter_pg():
+    """Mixed Nones and bound values in one filter set: placeholder
+    numbering tracks bound values only, IS NULL clauses are inlined."""
+    q = sql.select_one(User, placeholder=pg, name="Alice", email=None)
+
+    assert q.sql == ("SELECT id, name, email FROM users WHERE name = $1 AND email IS NULL LIMIT 1")
+    assert q.params == ["Alice"]
+
+
+def test_select_one_value_after_none_keeps_placeholder_numbering_pg():
+    """A non-None after a None must still bind to $1, not $2."""
+    q = sql.select_one(User, placeholder=pg, email=None, name="Alice")
+
+    assert q.sql == ("SELECT id, name, email FROM users WHERE email IS NULL AND name = $1 LIMIT 1")
+    assert q.params == ["Alice"]
+
+
 # --- select_many -----------------------------------------------------
 
 
@@ -207,6 +240,28 @@ def test_select_many_sqlite_filter_with_pagination():
     q = sql.select_many(User, placeholder=lite, name="Alice", limit=5)
 
     assert q.sql == "SELECT id, name, email FROM users WHERE name = ? LIMIT ?"
+    assert q.params == ["Alice", 5]
+
+
+def test_select_many_none_filter_emits_is_null_pg():
+    q = sql.select_many(User, placeholder=pg, email=None)
+
+    assert q.sql == "SELECT id, name, email FROM users WHERE email IS NULL"
+    assert q.params == []
+
+
+def test_select_many_none_filter_with_pagination_pg():
+    """LIMIT/OFFSET placeholder numbering must skip the IS NULL field."""
+    q = sql.select_many(User, placeholder=pg, email=None, limit=5, offset=10)
+
+    assert q.sql == "SELECT id, name, email FROM users WHERE email IS NULL LIMIT $1 OFFSET $2"
+    assert q.params == [5, 10]
+
+
+def test_select_many_mixed_none_and_value_with_pagination_pg():
+    q = sql.select_many(User, placeholder=pg, name="Alice", email=None, limit=5)
+
+    assert q.sql == ("SELECT id, name, email FROM users WHERE name = $1 AND email IS NULL LIMIT $2")
     assert q.params == ["Alice", 5]
 
 
@@ -332,6 +387,33 @@ def test_update_with_returning_and_extra_where():
     assert q.sql == ("UPDATE users SET name = $1 WHERE id = $2 AND tenant_id = $3 RETURNING *")
 
 
+def test_update_where_none_emits_is_null_pg():
+    """A None in `where=` AND's an `IS NULL` predicate."""
+    user = User(id=1, name="Alice B")
+    q = sql.update(user, placeholder=pg, where={"deleted_at": None})
+
+    assert q.sql == "UPDATE users SET name = $1 WHERE id = $2 AND deleted_at IS NULL"
+    assert q.params == ["Alice B", 1]
+
+
+def test_update_where_none_emits_is_null_sqlite():
+    user = User(id=1, name="Alice B")
+    q = sql.update(user, placeholder=lite, where={"deleted_at": None})
+
+    assert q.sql == "UPDATE users SET name = ? WHERE id = ? AND deleted_at IS NULL"
+    assert q.params == ["Alice B", 1]
+
+
+def test_update_set_clause_none_value_stays_equals_null():
+    """`field = NULL` is the right SQL inside SET (it sets the column
+    to NULL), so SET-side Nones must keep using `= placeholder` and
+    bind None as a parameter rather than becoming `IS NULL`."""
+    q = sql.update(User.patch(id=1, email=None), placeholder=pg)
+
+    assert q.sql == "UPDATE users SET email = $1 WHERE id = $2"
+    assert q.params == [None, 1]
+
+
 def test_update_where_overlapping_pk_raises():
     """Re-specifying a PK field in where= would produce a confusing
     `id = $a AND id = $b` clause; reject it."""
@@ -454,6 +536,22 @@ def test_delete_with_extra_where_sqlite():
 
     assert q.sql == "DELETE FROM users WHERE id = ? AND tenant_id = ?"
     assert q.params == [1, 5]
+
+
+def test_delete_where_none_emits_is_null_pg():
+    user = User(id=1, name="Alice")
+    q = sql.delete(user, placeholder=pg, where={"deleted_at": None})
+
+    assert q.sql == "DELETE FROM users WHERE id = $1 AND deleted_at IS NULL"
+    assert q.params == [1]
+
+
+def test_delete_where_none_emits_is_null_sqlite():
+    user = User(id=1, name="Alice")
+    q = sql.delete(user, placeholder=lite, where={"deleted_at": None})
+
+    assert q.sql == "DELETE FROM users WHERE id = ? AND deleted_at IS NULL"
+    assert q.params == [1]
 
 
 def test_delete_where_overlapping_pk_raises():
