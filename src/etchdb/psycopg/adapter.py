@@ -118,6 +118,8 @@ class PsycopgAdapter(AdapterBase):
     async def execute(self, sql: str, *params: Any) -> int:
         async with _wrap_errors(), self._cursor() as cur:
             await cur.execute(cast(Any, sql), params)
+            if cur.description is not None:
+                return -1
             return cur.rowcount
 
     async def fetch(self, sql: str, *params: Any) -> list[dict[str, Any]]:
@@ -167,6 +169,8 @@ class _PsycopgConnAdapter(AdapterBase):
     async def execute(self, sql: str, *params: Any) -> int:
         async with _wrap_errors(), self._cursor() as cur:
             await cur.execute(cast(Any, sql), params)
+            if cur.description is not None:
+                return -1
             return cur.rowcount
 
     async def fetch(self, sql: str, *params: Any) -> list[dict[str, Any]]:

@@ -316,11 +316,15 @@ _OPS = {
     "insert": insert,
     "update": update,
     "delete": delete,
+    "insert_many": insert_many,
+    "delete_many": delete_many,
 }
+
+Op = Literal["get", "query", "insert", "update", "delete", "insert_many", "delete_many"]
 
 
 def compose(
-    op: Literal["get", "query", "insert", "update", "delete"],
+    op: Op,
     *args: Any,
     placeholder: Callable[[int], str],
     **kwargs: Any,
@@ -337,6 +341,10 @@ def compose(
         pg = lambda i: f"${i + 1}"
         q = sql.compose("get", User, id=1, placeholder=pg)
         assert q.sql == "SELECT id, name FROM users WHERE id = $1 LIMIT 1"
+
+    `insert_many` / `delete_many` are inspectable too; the DB facade
+    chunks long batches before reaching the emitter, so the composed
+    SQL is the single-statement shape for the chunk being inspected.
     """
     try:
         fn = _OPS[op]
@@ -382,6 +390,12 @@ def _on_conflict_clause(
         return " ON CONFLICT DO NOTHING"
     if mode == "upsert":
         pk = list(model.__pk__)
+        missing_pk = [f for f in pk if f not in set_fields]
+        if missing_pk:
+            raise ValueError(
+                f"on_conflict='upsert' requires every PK field to be set; "
+                f"missing: {missing_pk}. Set the PK or use on_conflict='ignore'."
+            )
         non_pk = [f for f in set_fields if f not in pk]
         if not non_pk:
             raise ValueError(

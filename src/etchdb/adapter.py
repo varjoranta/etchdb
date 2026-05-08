@@ -27,10 +27,12 @@ class AdapterBase(ABC):
     async def execute(self, sql: str, *params: Any) -> int:
         """Execute a statement and return the affected-row count.
 
-        Returns the number of rows the statement affected (DELETE,
-        UPDATE, INSERT counts), or `-1` for statements that do not
-        report a rowcount (CREATE TABLE, ALTER TABLE, etc.). The `-1`
-        sentinel mirrors psycopg's and sqlite3's native convention.
+        Returns the affected-row count for DML (INSERT / UPDATE /
+        DELETE), or `-1` for everything else (DDL, BEGIN, SELECT,
+        COPY, ...). The `-1` sentinel mirrors psycopg's and sqlite3's
+        native convention. SELECT through `execute` is explicitly not
+        a count contract; use `fetch` / `fetchrow` / `fetchval` for
+        SELECT and read the row count off the result.
         """
         ...
 

@@ -144,10 +144,18 @@ def test_insert_with_on_conflict_upsert_pg():
 def test_insert_with_on_conflict_upsert_pk_only_raises():
     """Single insert: same PK-only check as insert_many; an upsert
     with nothing to update would be an empty SET clause."""
-    user = User(id=1, name="Alice")  # name and id; if we drop name, only id remains
-    user_pk_only = type(user).model_construct(id=1)
+    user_pk_only = User.model_construct(id=1)
     with pytest.raises(ValueError, match="at least one non-PK field"):
         sql.insert(user_pk_only, placeholder=pg, on_conflict="upsert")
+
+
+def test_insert_with_on_conflict_upsert_unset_pk_raises():
+    """Without an explicit PK, the database allocates a fresh value,
+    the conflict target can never fire, and 'upsert' silently behaves
+    like a plain insert. Reject the shape rather than ship the
+    silent-degradation footgun."""
+    with pytest.raises(ValueError, match="requires every PK field"):
+        sql.insert(User(name="Alice"), placeholder=pg, on_conflict="upsert")
 
 
 def test_insert_unknown_on_conflict_raises():
@@ -838,6 +846,15 @@ def test_insert_many_with_on_conflict_upsert_pk_only_raises():
         sql.insert_many(rows, placeholder=pg, on_conflict="upsert")
 
 
+def test_insert_many_with_on_conflict_upsert_unset_pk_raises():
+    """If any row has an unset PK column, the upsert can't fire on
+    that row; reject the whole batch up front rather than ship the
+    silent-degradation footgun."""
+    rows = [User(name="Alice")]
+    with pytest.raises(ValueError, match="requires every PK field"):
+        sql.insert_many(rows, placeholder=pg, on_conflict="upsert")
+
+
 def test_insert_many_empty_raises():
     with pytest.raises(ValueError, match="at least one row"):
         sql.insert_many([], placeholder=pg)
@@ -955,3 +972,21 @@ def test_sql_compose_for_each_op():
 def test_sql_compose_unknown_op_raises():
     with pytest.raises(ValueError, match="Unknown op"):
         sql.compose("frobnicate", User, placeholder=pg)  # type: ignore[arg-type]
+
+
+def test_sql_compose_insert_many():
+    """The bulk ops are inspectable through compose too; the composed
+    SQL is the single-statement shape for the chunk being inspected."""
+    rows = [User(id=1, name="A"), User(id=2, name="B")]
+    q = sql.compose("insert_many", rows, placeholder=pg, on_conflict="ignore")
+
+    assert q.sql.startswith("INSERT INTO users (id, name) VALUES")
+    assert q.sql.endswith("ON CONFLICT DO NOTHING")
+    assert q.params == [1, "A", 2, "B"]
+
+
+def test_sql_compose_delete_many():
+    q = sql.compose("delete_many", User, [1, 2, 3], placeholder=pg)
+
+    assert q.sql == "DELETE FROM users WHERE id IN ($1, $2, $3)"
+    assert q.params == [1, 2, 3]

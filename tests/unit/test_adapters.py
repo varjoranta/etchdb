@@ -54,3 +54,12 @@ def test_asyncpg_rowcount_from_status_ddl_returns_minus_one():
     assert _rowcount_from_status("CREATE TABLE") == -1
     assert _rowcount_from_status("DROP TABLE") == -1
     assert _rowcount_from_status("BEGIN") == -1
+
+
+def test_asyncpg_rowcount_from_status_select_returns_minus_one():
+    """db.execute promises rowcount for DML only; SELECT N's trailing
+    int is a row count, not an affected-row count, so it must not leak
+    through."""
+    assert _rowcount_from_status("SELECT 1") == -1
+    assert _rowcount_from_status("SELECT 0") == -1
+    assert _rowcount_from_status("COPY 5") == -1

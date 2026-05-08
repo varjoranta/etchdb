@@ -53,3 +53,14 @@ async def test_execute_ddl_returns_minus_one(db: DB):
         assert n == -1
     finally:
         await db.execute("DROP TABLE IF EXISTS etchdb_ddl_probe")
+
+
+async def test_execute_select_returns_minus_one(db: DB):
+    """SELECT through execute is explicitly not a row-count contract.
+    asyncpg natively reports `SELECT N` as a count and would otherwise
+    leak through; pin -1 across all three backends so callers either
+    use fetch* (the right shape) or get a stable sentinel."""
+    await db.insert(User(id=1, name="alice"))
+    await db.insert(User(id=2, name="bob"))
+    n = await db.execute("SELECT * FROM users")
+    assert n == -1

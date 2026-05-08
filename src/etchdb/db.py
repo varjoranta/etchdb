@@ -11,7 +11,7 @@ an adapter, or via the URL-scheme dispatcher `DB.from_url`.
 from __future__ import annotations
 
 from contextlib import asynccontextmanager
-from typing import TYPE_CHECKING, Any, Literal
+from typing import TYPE_CHECKING, Any
 from urllib.parse import urlparse
 
 from etchdb import sql
@@ -95,10 +95,13 @@ class DB:
     async def execute(self, sql: str, *params: Any) -> int:
         """Execute a statement and return the affected-row count.
 
-        Returns the rowcount for DML (INSERT / UPDATE / DELETE), or
-        `-1` for statements that do not report a count (DDL, CREATE
-        TABLE, etc.). Normalised across asyncpg, psycopg, and
-        aiosqlite so the same call site works on every backend.
+        Returns the rowcount for DML (INSERT / UPDATE / DELETE);
+        returns `-1` for everything else (DDL, BEGIN, SELECT, COPY,
+        ...). Normalised across asyncpg, psycopg, and aiosqlite so
+        the same call site works on every backend. SELECT through
+        `execute` is explicitly not a count contract: use
+        `fetch` / `fetchrow` / `fetchval` and read the count off the
+        result.
         """
         return await self._adapter.execute(sql, *params)
 
@@ -273,7 +276,7 @@ class DB:
 
     def compose(
         self,
-        op: Literal["get", "query", "insert", "update", "delete"],
+        op: sql.Op,
         *args: Any,
         **kwargs: Any,
     ) -> SqlQuery:
