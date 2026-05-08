@@ -15,7 +15,23 @@ import psycopg
 from psycopg.rows import AsyncRowFactory, dict_row, tuple_row
 from psycopg_pool import AsyncConnectionPool
 
+from etchdb import errors
 from etchdb.adapter import AdapterBase
+
+
+def _map_exception(exc: BaseException) -> errors.EtchdbError | None:
+    """Translate a psycopg exception to its etchdb equivalent, or None
+    if the exception should propagate unchanged."""
+    if isinstance(exc, psycopg.errors.IntegrityError):
+        return errors.IntegrityError(str(exc))
+    if isinstance(exc, psycopg.errors.UndefinedTable):
+        return errors.UndefinedTableError(str(exc))
+    if isinstance(exc, psycopg.errors.OperationalError | psycopg.errors.InterfaceError):
+        return errors.OperationalError(str(exc))
+    return None
+
+
+_wrap_errors = errors.wrap(_map_exception)
 
 
 class PsycopgAdapter(AdapterBase):
@@ -68,29 +84,29 @@ class PsycopgAdapter(AdapterBase):
     # strings here (the SqlQuery / raw-SQL contract). The injection
     # guard is the `*params` substitution, not the query type.
     async def execute(self, sql: str, *params: Any) -> Any:
-        async with self._cursor() as cur:
+        async with _wrap_errors(), self._cursor() as cur:
             await cur.execute(cast(Any, sql), params)
 
     async def fetch(self, sql: str, *params: Any) -> list[dict[str, Any]]:
-        async with self._cursor() as cur:
+        async with _wrap_errors(), self._cursor() as cur:
             await cur.execute(cast(Any, sql), params)
             return await cur.fetchall()
 
     async def fetchrow(self, sql: str, *params: Any) -> dict[str, Any] | None:
-        async with self._cursor() as cur:
+        async with _wrap_errors(), self._cursor() as cur:
             await cur.execute(cast(Any, sql), params)
             return await cur.fetchone()
 
     async def fetchval(self, sql: str, *params: Any) -> Any:
         # tuple_row skips the dict allocation we'd just throw away.
-        async with self._cursor(row_factory=tuple_row) as cur:
+        async with _wrap_errors(), self._cursor(row_factory=tuple_row) as cur:
             await cur.execute(cast(Any, sql), params)
             row = await cur.fetchone()
             return row[0] if row is not None else None
 
     @asynccontextmanager
     async def transaction(self) -> AsyncIterator[AdapterBase]:
-        async with self._pool.connection() as conn, conn.transaction():
+        async with _wrap_errors(), self._pool.connection() as conn, conn.transaction():
             yield _PsycopgConnAdapter(conn)
 
     async def close(self) -> None:
@@ -116,28 +132,28 @@ class _PsycopgConnAdapter(AdapterBase):
             yield cur
 
     async def execute(self, sql: str, *params: Any) -> Any:
-        async with self._cursor() as cur:
+        async with _wrap_errors(), self._cursor() as cur:
             await cur.execute(cast(Any, sql), params)
 
     async def fetch(self, sql: str, *params: Any) -> list[dict[str, Any]]:
-        async with self._cursor() as cur:
+        async with _wrap_errors(), self._cursor() as cur:
             await cur.execute(cast(Any, sql), params)
             return await cur.fetchall()
 
     async def fetchrow(self, sql: str, *params: Any) -> dict[str, Any] | None:
-        async with self._cursor() as cur:
+        async with _wrap_errors(), self._cursor() as cur:
             await cur.execute(cast(Any, sql), params)
             return await cur.fetchone()
 
     async def fetchval(self, sql: str, *params: Any) -> Any:
-        async with self._cursor(row_factory=tuple_row) as cur:
+        async with _wrap_errors(), self._cursor(row_factory=tuple_row) as cur:
             await cur.execute(cast(Any, sql), params)
             row = await cur.fetchone()
             return row[0] if row is not None else None
 
     @asynccontextmanager
     async def transaction(self) -> AsyncIterator[AdapterBase]:
-        async with self._conn.transaction():
+        async with _wrap_errors(), self._conn.transaction():
             yield self
 
     async def close(self) -> None:

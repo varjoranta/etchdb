@@ -8,6 +8,7 @@ aiosqlite's internal queue, which is the correct sqlite3 model.
 
 from __future__ import annotations
 
+import sqlite3
 from collections.abc import AsyncIterator
 from contextlib import asynccontextmanager
 from typing import Any
@@ -15,7 +16,28 @@ from urllib.parse import urlparse
 
 import aiosqlite
 
+from etchdb import errors
 from etchdb.adapter import AdapterBase
+
+
+def _map_exception(exc: BaseException) -> errors.EtchdbError | None:
+    """Translate a sqlite3 exception (raised through aiosqlite) to its
+    etchdb equivalent, or None if the exception should propagate as-is.
+    """
+    if isinstance(exc, sqlite3.IntegrityError):
+        return errors.IntegrityError(str(exc))
+    if isinstance(exc, sqlite3.OperationalError):
+        # sqlite3.OperationalError covers both "no such table" and
+        # connection-level failures; sqlite3 has no richer subclass,
+        # so disambiguate by message text.
+        msg = str(exc).lower()
+        if "no such table" in msg or "no such column" in msg:
+            return errors.UndefinedTableError(str(exc))
+        return errors.OperationalError(str(exc))
+    return None
+
+
+_wrap_errors = errors.wrap(_map_exception)
 
 
 def _path_from_url(url: str) -> str:
@@ -67,21 +89,22 @@ class AiosqliteAdapter(AdapterBase):
         return cls(conn, owns_conn=True)
 
     async def execute(self, sql: str, *params: Any) -> Any:
-        await self._conn.execute(sql, params)
-        await self._conn.commit()
+        async with _wrap_errors():
+            await self._conn.execute(sql, params)
+            await self._conn.commit()
 
     async def fetch(self, sql: str, *params: Any) -> list[dict[str, Any]]:
-        async with self._conn.execute(sql, params) as cursor:
+        async with _wrap_errors(), self._conn.execute(sql, params) as cursor:
             rows = await cursor.fetchall()
         return [dict(r) for r in rows]
 
     async def fetchrow(self, sql: str, *params: Any) -> dict[str, Any] | None:
-        async with self._conn.execute(sql, params) as cursor:
+        async with _wrap_errors(), self._conn.execute(sql, params) as cursor:
             row = await cursor.fetchone()
         return dict(row) if row is not None else None
 
     async def fetchval(self, sql: str, *params: Any) -> Any:
-        async with self._conn.execute(sql, params) as cursor:
+        async with _wrap_errors(), self._conn.execute(sql, params) as cursor:
             row = await cursor.fetchone()
         return row[0] if row is not None else None
 
@@ -89,11 +112,16 @@ class AiosqliteAdapter(AdapterBase):
     async def transaction(self) -> AsyncIterator[AdapterBase]:
         # sqlite3's default isolation_level auto-injects BEGIN before DML,
         # so we don't emit one explicitly; we just commit on clean exit
-        # and rollback on any exception.
+        # and rollback on any exception. Rollback must run before the
+        # mapped exception escapes, so we can't reuse `_wrap_errors`.
         try:
             yield _AiosqliteTxAdapter(self._conn)
-        except BaseException:
+        except BaseException as e:
             await self._conn.rollback()
+            if isinstance(e, Exception):
+                mapped = _map_exception(e)
+                if mapped is not None:
+                    raise mapped from e
             raise
         else:
             await self._conn.commit()
@@ -114,20 +142,21 @@ class _AiosqliteTxAdapter(AdapterBase):
         return "?"
 
     async def execute(self, sql: str, *params: Any) -> Any:
-        await self._conn.execute(sql, params)
+        async with _wrap_errors():
+            await self._conn.execute(sql, params)
 
     async def fetch(self, sql: str, *params: Any) -> list[dict[str, Any]]:
-        async with self._conn.execute(sql, params) as cursor:
+        async with _wrap_errors(), self._conn.execute(sql, params) as cursor:
             rows = await cursor.fetchall()
         return [dict(r) for r in rows]
 
     async def fetchrow(self, sql: str, *params: Any) -> dict[str, Any] | None:
-        async with self._conn.execute(sql, params) as cursor:
+        async with _wrap_errors(), self._conn.execute(sql, params) as cursor:
             row = await cursor.fetchone()
         return dict(row) if row is not None else None
 
     async def fetchval(self, sql: str, *params: Any) -> Any:
-        async with self._conn.execute(sql, params) as cursor:
+        async with _wrap_errors(), self._conn.execute(sql, params) as cursor:
             row = await cursor.fetchone()
         return row[0] if row is not None else None
 

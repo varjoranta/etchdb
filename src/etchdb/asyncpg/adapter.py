@@ -8,7 +8,29 @@ from typing import Any
 
 import asyncpg
 
+from etchdb import errors
 from etchdb.adapter import AdapterBase
+
+
+def _map_exception(exc: BaseException) -> errors.EtchdbError | None:
+    """Translate an asyncpg exception to its etchdb equivalent, or
+    None if the exception should propagate unchanged."""
+    if isinstance(exc, asyncpg.exceptions.IntegrityConstraintViolationError):
+        return errors.IntegrityError(str(exc))
+    if isinstance(exc, asyncpg.exceptions.UndefinedTableError):
+        return errors.UndefinedTableError(str(exc))
+    if isinstance(
+        exc,
+        asyncpg.exceptions.InvalidPasswordError
+        | asyncpg.exceptions.PostgresConnectionError
+        | asyncpg.exceptions.ConnectionDoesNotExistError
+        | ConnectionError,
+    ):
+        return errors.OperationalError(str(exc))
+    return None
+
+
+_wrap_errors = errors.wrap(_map_exception)
 
 
 class AsyncpgAdapter(AdapterBase):
@@ -46,26 +68,26 @@ class AsyncpgAdapter(AdapterBase):
         return cls(pool, owns_pool=True)
 
     async def execute(self, sql: str, *params: Any) -> Any:
-        async with self._pool.acquire() as conn:
+        async with _wrap_errors(), self._pool.acquire() as conn:
             return await conn.execute(sql, *params)
 
     async def fetch(self, sql: str, *params: Any) -> list[dict[str, Any]]:
-        async with self._pool.acquire() as conn:
+        async with _wrap_errors(), self._pool.acquire() as conn:
             records = await conn.fetch(sql, *params)
         return [dict(r) for r in records]
 
     async def fetchrow(self, sql: str, *params: Any) -> dict[str, Any] | None:
-        async with self._pool.acquire() as conn:
+        async with _wrap_errors(), self._pool.acquire() as conn:
             record = await conn.fetchrow(sql, *params)
         return dict(record) if record is not None else None
 
     async def fetchval(self, sql: str, *params: Any) -> Any:
-        async with self._pool.acquire() as conn:
+        async with _wrap_errors(), self._pool.acquire() as conn:
             return await conn.fetchval(sql, *params)
 
     @asynccontextmanager
     async def transaction(self) -> AsyncIterator[AdapterBase]:
-        async with self._pool.acquire() as conn, conn.transaction():
+        async with _wrap_errors(), self._pool.acquire() as conn, conn.transaction():
             yield _AsyncpgConnAdapter(conn)
 
     async def close(self) -> None:
@@ -84,22 +106,26 @@ class _AsyncpgConnAdapter(AdapterBase):
         return f"${i + 1}"
 
     async def execute(self, sql: str, *params: Any) -> Any:
-        return await self._conn.execute(sql, *params)
+        async with _wrap_errors():
+            return await self._conn.execute(sql, *params)
 
     async def fetch(self, sql: str, *params: Any) -> list[dict[str, Any]]:
-        records = await self._conn.fetch(sql, *params)
+        async with _wrap_errors():
+            records = await self._conn.fetch(sql, *params)
         return [dict(r) for r in records]
 
     async def fetchrow(self, sql: str, *params: Any) -> dict[str, Any] | None:
-        record = await self._conn.fetchrow(sql, *params)
+        async with _wrap_errors():
+            record = await self._conn.fetchrow(sql, *params)
         return dict(record) if record is not None else None
 
     async def fetchval(self, sql: str, *params: Any) -> Any:
-        return await self._conn.fetchval(sql, *params)
+        async with _wrap_errors():
+            return await self._conn.fetchval(sql, *params)
 
     @asynccontextmanager
     async def transaction(self) -> AsyncIterator[AdapterBase]:
-        async with self._conn.transaction():
+        async with _wrap_errors(), self._conn.transaction():
             yield self
 
     async def close(self) -> None:
