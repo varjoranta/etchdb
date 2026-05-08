@@ -265,6 +265,19 @@ def test_select_many_mixed_none_and_value_with_pagination_pg():
     assert q.params == ["Alice", 5]
 
 
+def test_select_many_negative_limit_raises():
+    """LIMIT -1 is silently 'no limit' on SQLite and an error on PG;
+    the inconsistency is exactly the kind of footgun etchdb should
+    refuse rather than paper over."""
+    with pytest.raises(ValueError, match="limit"):
+        sql.select_many(User, placeholder=pg, limit=-1)
+
+
+def test_select_many_negative_offset_raises():
+    with pytest.raises(ValueError, match="offset"):
+        sql.select_many(User, placeholder=pg, offset=-1)
+
+
 # --- update ----------------------------------------------------------
 
 

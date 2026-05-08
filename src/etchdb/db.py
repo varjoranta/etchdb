@@ -154,6 +154,8 @@ class DB:
         Uses offset pagination, which is O(N^2) over huge tables. For
         full scans of large tables, prefer a raw keyset loop instead.
         """
+        if batch_size < 1:
+            raise ValueError(f"batch_size must be >= 1, got {batch_size}")
         if order_by is None:
             order_by = list(model.__pk__)
         offset = 0

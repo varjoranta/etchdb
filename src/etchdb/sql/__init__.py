@@ -101,10 +101,16 @@ def select_many(
     if order_by:
         sql += f" ORDER BY {_format_columns(order_by)}"
     if limit is not None:
-        params.append(int(limit))
+        n = int(limit)
+        if n < 0:
+            raise ValueError(f"limit must be >= 0, got {n}")
+        params.append(n)
         sql += f" LIMIT {placeholder(len(params) - 1)}"
     if offset is not None:
-        params.append(int(offset))
+        n = int(offset)
+        if n < 0:
+            raise ValueError(f"offset must be >= 0, got {n}")
+        params.append(n)
         sql += f" OFFSET {placeholder(len(params) - 1)}"
 
     return SqlQuery(sql=sql, params=params)

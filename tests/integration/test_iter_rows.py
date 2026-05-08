@@ -1,5 +1,7 @@
 """Integration tests for db.iter_rows: paginated async iteration."""
 
+import pytest
+
 from etchdb import DB
 from tests._models import User
 
@@ -47,3 +49,15 @@ async def test_iter_rows_custom_order_by_overrides_default(db: DB):
     rows = [u async for u in db.iter_rows(User, order_by="name", batch_size=2)]
 
     assert [u.name for u in rows] == ["alice", "bob", "charlie"]
+
+
+async def test_iter_rows_rejects_zero_or_negative_batch_size(db: DB):
+    """SQLite treats LIMIT -1 as 'no limit', so a negative batch_size
+    plus offset += batch_size would loop forever yielding the same
+    rows. Reject the input outright instead of trusting the dialect."""
+    with pytest.raises(ValueError, match="batch_size"):
+        async for _ in db.iter_rows(User, batch_size=0):
+            pass
+    with pytest.raises(ValueError, match="batch_size"):
+        async for _ in db.iter_rows(User, batch_size=-1):
+            pass
