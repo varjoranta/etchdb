@@ -9,6 +9,7 @@ own `placeholder` callable so the same emitter works for both Postgres
 from collections.abc import Callable, Mapping, Sequence
 from typing import Any, Literal
 
+from etchdb.expr import _Expr
 from etchdb.query import SqlQuery
 from etchdb.row import Row
 
@@ -47,6 +48,7 @@ def insert(
         return SqlQuery(sql=sql, params=[])
 
     values = [getattr(row, f) for f in fields]
+    _reject_exprs("insert", fields, values)
     columns = ", ".join(fields)
     placeholders = ", ".join(placeholder(i) for i in range(len(fields)))
 
@@ -158,12 +160,11 @@ def update(
     if not set_fields:
         raise ValueError(f"{type(row).__name__} has no non-PK fields to update")
 
-    set_sql = _eq_clauses(set_fields, placeholder=placeholder, sep=", ")
+    set_items = {f: getattr(row, f) for f in set_fields}
+    set_sql, set_values = _set_clauses(set_items, placeholder=placeholder)
     where_sql, where_values = _where_clauses(
-        where_items, placeholder=placeholder, start=len(set_fields)
+        where_items, placeholder=placeholder, start=len(set_values)
     )
-
-    set_values = [getattr(row, f) for f in set_fields]
 
     sql = f"UPDATE {table} SET {set_sql} WHERE {where_sql}"
     if returning is not None:
@@ -241,7 +242,9 @@ def insert_many(
     for row in rows:
         group = ", ".join(placeholder(len(params) + i) for i in range(n))
         value_groups.append(f"({group})")
-        params.extend(getattr(row, f) for f in fields)
+        row_values = [getattr(row, f) for f in fields]
+        _reject_exprs("insert_many", fields, row_values)
+        params.extend(row_values)
 
     sql = f"INSERT INTO {table} ({columns}) VALUES {', '.join(value_groups)}"
     sql += _on_conflict_clause(first_cls, fields, on_conflict)
@@ -334,6 +337,22 @@ def compose(
 # --- helpers ----------------------------------------------------------
 
 
+def _reject_exprs(op: str, fields: Sequence[str], values: Sequence[Any]) -> None:
+    """Raise if any value is a column-expression sentinel.
+
+    `Inc` / `Now` only make sense in UPDATE SET clauses (they
+    reference the column itself or an SQL function). In INSERT they
+    would either be undefined (`Inc` on a row that doesn't exist
+    yet) or a footgun, so reject them at the call site.
+    """
+    bad = [f for f, v in zip(fields, values, strict=True) if isinstance(v, _Expr)]
+    if bad:
+        raise ValueError(
+            f"Cannot {op} with column-expression sentinels (Inc / Now) on "
+            f"{bad}. Use them with db.update on an existing row instead."
+        )
+
+
 def _on_conflict_clause(
     model: type[Row],
     set_fields: list[str],
@@ -401,21 +420,31 @@ def _table_name(row_or_class: Row | type[Row]) -> str:
     return table
 
 
-def _eq_clauses(
-    fields: list[str],
+def _set_clauses(
+    items: Mapping[str, Any],
     *,
     placeholder: Callable[[int], str],
     start: int = 0,
-    sep: str = " AND ",
-) -> str:
-    """Build `field1 = ? AND field2 = ? ...` clauses with the given placeholder style.
+) -> tuple[str, list[Any]]:
+    """Build a SET clause body. Plain values bind as `field = $N`;
+    `_Expr` values render via their own SQL fragment and may consume
+    zero or more placeholders.
 
-    `start` is the 0-indexed position in the surrounding parameter list at
-    which this clause's parameters begin (matters for Postgres `$N` numbering).
+    Returns `(sql_body, values)` in placeholder order. Values may be
+    shorter than `items` when an expression renders without bound
+    parameters (e.g. `Now()` -> `CURRENT_TIMESTAMP`).
     """
-    if not fields:
-        return ""
-    return sep.join(f"{f} = {placeholder(start + i)}" for i, f in enumerate(fields))
+    parts: list[str] = []
+    values: list[Any] = []
+    for field, value in items.items():
+        if isinstance(value, _Expr):
+            rhs, expr_values = value.render(field, placeholder, start + len(values))
+            parts.append(f"{field} = {rhs}")
+            values.extend(expr_values)
+        else:
+            parts.append(f"{field} = {placeholder(start + len(values))}")
+            values.append(value)
+    return ", ".join(parts), values
 
 
 def _where_clauses(

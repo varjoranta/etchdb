@@ -42,6 +42,12 @@ await db.update(User(id=alice.id, name="Alice B"),
 # so models with required NOT NULL columns still flow through.
 await db.update(User.patch(id=alice.id, name="Alice B"))
 
+# Atomic column expressions in SET (use Row.patch so the sentinels
+# slip past validation):
+from etchdb import Inc, Now
+await db.update(Counter.patch(id=1, n=Inc()))           # n = n + 1
+await db.update(Article.patch(id=1, updated_at=Now()))  # = CURRENT_TIMESTAMP
+
 # Bulk insert / delete (chunked at the driver's parameter limit).
 await db.insert_many([User(name=n) for n in names], on_conflict="ignore")
 await db.insert_many(rows, on_conflict="upsert")    # ON CONFLICT (pk) DO UPDATE SET ...

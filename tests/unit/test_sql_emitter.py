@@ -606,6 +606,119 @@ def test_update_partial_composite_pk_raises():
         sql.update(role, placeholder=pg)
 
 
+# --- update: column expression sentinels ------------------------------
+
+
+def test_update_with_inc_emits_self_referential_set_pg():
+    """`Inc()` defaults to +1; the SET clause references the column
+    itself so the increment is atomic at the DB level."""
+    from etchdb import Inc
+
+    class Counter(Row):
+        __table__ = "counters"
+        id: int
+        n: int
+
+    q = sql.update(Counter.patch(id=1, n=Inc()), placeholder=pg)
+
+    assert q.sql == "UPDATE counters SET n = n + $1 WHERE id = $2"
+    assert q.params == [1, 1]
+
+
+def test_update_with_inc_custom_step_pg():
+    from etchdb import Inc
+
+    class Counter(Row):
+        __table__ = "counters"
+        id: int
+        n: int
+
+    q = sql.update(Counter.patch(id=1, n=Inc(by=5)), placeholder=pg)
+
+    assert q.params == [5, 1]
+
+
+def test_update_with_now_emits_current_timestamp_pg():
+    """`Now()` consumes no placeholder; placeholder numbering for the
+    WHERE clause must skip past the SET fragment."""
+    from etchdb import Now
+
+    class Article(Row):
+        __table__ = "articles"
+        id: int
+        updated_at: str
+
+    q = sql.update(Article.patch(id=1, updated_at=Now()), placeholder=pg)
+
+    assert q.sql == "UPDATE articles SET updated_at = CURRENT_TIMESTAMP WHERE id = $1"
+    assert q.params == [1]
+
+
+def test_update_with_now_sqlite():
+    from etchdb import Now
+
+    class Article(Row):
+        __table__ = "articles"
+        id: int
+        updated_at: str
+
+    q = sql.update(Article.patch(id=1, updated_at=Now()), placeholder=lite)
+
+    assert q.sql == "UPDATE articles SET updated_at = CURRENT_TIMESTAMP WHERE id = ?"
+    assert q.params == [1]
+
+
+def test_update_mixed_inc_now_and_plain_value_pg():
+    """All three SET shapes coexist in one statement; placeholder
+    numbering threads through correctly."""
+    from etchdb import Inc, Now
+
+    class Counter(Row):
+        __table__ = "counters"
+        id: int
+        n: int
+        label: str
+        updated_at: str
+
+    q = sql.update(
+        Counter.patch(id=1, label="hot", n=Inc(by=2), updated_at=Now()),
+        placeholder=pg,
+    )
+
+    # model_fields declaration order is id, n, label, updated_at;
+    # SET drops id (PK) and emits n / label / updated_at in that order.
+    assert q.sql == (
+        "UPDATE counters SET n = n + $1, label = $2, updated_at = CURRENT_TIMESTAMP WHERE id = $3"
+    )
+    assert q.params == [2, "hot", 1]
+
+
+def test_insert_with_inc_raises():
+    """Inc / Now reference an existing row; using them in INSERT is
+    nonsensical (Inc) or just confusing (Now), so reject up front."""
+    from etchdb import Inc
+
+    class Counter(Row):
+        __table__ = "counters"
+        id: int
+        n: int
+
+    with pytest.raises(ValueError, match="column-expression sentinels"):
+        sql.insert(Counter.patch(id=1, n=Inc()), placeholder=pg)
+
+
+def test_insert_many_with_now_raises():
+    from etchdb import Now
+
+    class Article(Row):
+        __table__ = "articles"
+        id: int
+        updated_at: str
+
+    with pytest.raises(ValueError, match="column-expression sentinels"):
+        sql.insert_many([Article.patch(id=1, updated_at=Now())], placeholder=pg)
+
+
 # --- delete ----------------------------------------------------------
 
 
