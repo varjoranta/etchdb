@@ -2,9 +2,15 @@ name: Release
 
 # Pushing a `vX.Y.Z` tag is the only ship action: this workflow runs unit
 # tests, builds sdist + wheel, publishes to PyPI, and creates a GitHub
-# Release (with the dist files attached) in one motion. Edit the release
-# body afterwards via `gh release edit` if you want hand-curated notes
-# beyond the auto-generated commit list.
+# Release (with the dist files attached) in one motion. Title and body
+# are bare (just the tag name + auto-generated commit list); run
+# `gh release edit vX.Y.Z` afterwards if you want a hand-curated title
+# and body like the v0.2 / v0.3 / v0.4 ones.
+#
+# Failure recovery: if `uv publish` succeeds but `gh release create`
+# fails (rare, e.g. transient GitHub API), don't re-push the tag --
+# `uv publish` would reject the duplicate upload. Run `gh release
+# create vX.Y.Z --generate-notes dist/*` manually to finish the job.
 
 on:
   push:
@@ -36,6 +42,9 @@ jobs:
       - name: Install uv (with Python)
         uses: astral-sh/setup-uv@v5
         with:
+          # Tests run on 3.13 (current head). The wheel is `py3-none-any`
+          # so it installs on every supported version; per-push CI (when
+          # added) should cover the full 3.12 - 3.14 matrix.
           python-version: "3.13"
 
       - name: Install dependencies
@@ -51,6 +60,10 @@ jobs:
         run: uv build
 
       - name: Publish to PyPI
+        # Token-based publishing for now; switching to PyPI trusted
+        # publishing later just means dropping `UV_PUBLISH_TOKEN`,
+        # adding `permissions: id-token: write` to this job, and
+        # registering the publisher on PyPI.
         env:
           UV_PUBLISH_TOKEN: ${{ secrets.PYPI_API_TOKEN }}
         run: uv publish
