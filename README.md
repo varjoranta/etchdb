@@ -24,6 +24,7 @@ db = await DB.from_url("postgresql+asyncpg://user@host/db")
 alice = await db.insert(User(name="Alice"))           # alice.id is now populated by the DB
 user = await db.get(User, id=alice.id)                # one row or None
 users = await db.query(User)                          # list of rows
+no_email = await db.query(User, email=None)           # IS NULL, not = NULL
 await db.update(User(id=alice.id, name="Alice B"))    # partial: email is preserved
 await db.delete(alice)
 
