@@ -5,7 +5,7 @@ substitution since the README uses a Postgres URL for narrative).
 This test guards against the README drifting from the API.
 """
 
-from etchdb import DB, Row
+from etchdb import DB, Row, sql
 
 
 class User(Row):
@@ -39,6 +39,26 @@ async def test_readme_example_round_trip():
         assert updated.name == "Alice B"
         assert updated.email == "a@example.com"
 
+        # Multi-tenant-style scoping: where= AND's onto the PK.
+        scoped = await db.update(
+            User(id=alice.id, name="Alice C"),
+            where={"email": "a@example.com"},
+        )
+        assert scoped is not None and scoped.name == "Alice C"
+
+        # Same scope-mismatch returns None and leaves the row alone.
+        miss = await db.update(
+            User(id=alice.id, name="Hacked"),
+            where={"email": "wrong@example.com"},
+        )
+        assert miss is None
+        still = await db.get(User, id=alice.id)
+        assert still is not None and still.name == "Alice C"
+
+        # Row.patch builds a partial Row without validating required fields.
+        patched = await db.update(User.patch(id=alice.id, email="b@example.com"))
+        assert patched is not None and patched.email == "b@example.com"
+
         await db.delete(alice)
         assert await db.get(User, id=alice.id) is None
 
@@ -57,9 +77,13 @@ async def test_readme_example_round_trip():
             await tx.insert(User(name="Carol"))
         assert (await db.fetchval("SELECT count(*) FROM users")) == 2
 
-        # Inspect SQL before executing
+        # Inspect SQL before executing (DB-bound)
         q = db.compose("get", User, id=1)
         assert "SELECT" in q.sql
         assert q.params == [1]
+
+        # Same inspector adapter-free, useful in unit tests.
+        q2 = sql.compose("get", User, id=1, placeholder=lambda i: f"?{i + 1}")
+        assert q2.params == [1]
     finally:
         await db.close()

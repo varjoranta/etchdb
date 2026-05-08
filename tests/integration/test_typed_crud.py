@@ -111,6 +111,30 @@ async def test_update_partial_preserves_unset_fields(db: DB):
     assert updated.email == "original@x"
 
 
+async def test_update_with_where_atomic_scoping(db: DB):
+    """update with where= must scope atomically: a non-matching extra
+    filter leaves the row unchanged and returns None, no fetch-then-
+    update race window."""
+    await db.insert(User(id=1, name="Alice", email="original@x"))
+
+    # Wrong scope: row stays put.
+    result = await db.update(
+        User(id=1, name="Hacked"),
+        where={"email": "wrong@x"},
+    )
+    assert result is None
+    found = await db.get(User, id=1)
+    assert found is not None and found.name == "Alice"
+
+    # Correct scope: SET applied.
+    result = await db.update(
+        User(id=1, name="Alice B"),
+        where={"email": "original@x"},
+    )
+    assert result is not None
+    assert result.name == "Alice B"
+
+
 async def test_update_composite_pk(db: DB):
     await db.insert(UserRole(user_id=1, role_id=2, note="initial"))
     await db.update(UserRole(user_id=1, role_id=2, note="changed"))
@@ -132,6 +156,20 @@ async def test_delete_composite_pk(db: DB):
     await db.insert(UserRole(user_id=1, role_id=2))
     await db.delete(UserRole(user_id=1, role_id=2))
     assert await db.get(UserRole, user_id=1, role_id=2) is None
+
+
+async def test_delete_with_where_scoped(db: DB):
+    """delete with where= scopes the deletion atomically: a wrong scope
+    is a no-op, the right scope removes the row."""
+    await db.insert(User(id=1, name="Alice", email="original@x"))
+
+    # Wrong scope: row stays.
+    await db.delete(User(id=1, name="Alice"), where={"email": "wrong@x"})
+    assert await db.get(User, id=1) is not None
+
+    # Correct scope: row gone.
+    await db.delete(User(id=1, name="Alice"), where={"email": "original@x"})
+    assert await db.get(User, id=1) is None
 
 
 # --- compose -------------------------------------------------------

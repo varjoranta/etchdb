@@ -17,7 +17,7 @@ from urllib.parse import urlparse
 from etchdb import sql
 
 if TYPE_CHECKING:
-    from collections.abc import AsyncIterator
+    from collections.abc import AsyncIterator, Mapping
 
     from etchdb.adapter import AdapterBase
     from etchdb.query import SqlQuery
@@ -36,15 +36,6 @@ def _hydrate(model_or_row: type[Row] | Row, row: dict[str, Any] | None) -> Row |
         return None
     cls = model_or_row if isinstance(model_or_row, type) else type(model_or_row)
     return cls(**row)
-
-
-_COMPOSE_OPS = {
-    "get": sql.select_one,
-    "query": sql.select_many,
-    "insert": sql.insert,
-    "update": sql.update,
-    "delete": sql.delete,
-}
 
 
 class DB:
@@ -149,15 +140,16 @@ class DB:
         result = await self._adapter.fetchrow(q.sql, *q.params)
         return _hydrate(row, result) or row
 
-    async def update(self, row: Row) -> Row | None:
-        """Update `row` keyed by its primary key. Returns the updated row,
-        or None if no row matched."""
-        q = sql.update(row, placeholder=self._adapter.placeholder, returning="*")
+    async def update(self, row: Row, *, where: Mapping[str, Any] | None = None) -> Row | None:
+        """Update `row` by PK, AND'd with `where=`. Returns the updated
+        row, or None if PK + `where=` matched no row."""
+        q = sql.update(row, placeholder=self._adapter.placeholder, returning="*", where=where)
         result = await self._adapter.fetchrow(q.sql, *q.params)
         return _hydrate(row, result)
 
-    async def delete(self, row: Row) -> None:
-        q = sql.delete(row, placeholder=self._adapter.placeholder)
+    async def delete(self, row: Row, *, where: Mapping[str, Any] | None = None) -> None:
+        """Delete `row` by PK, AND'd with `where=`."""
+        q = sql.delete(row, placeholder=self._adapter.placeholder, where=where)
         await self._adapter.execute(q.sql, *q.params)
 
     def compose(
@@ -166,17 +158,10 @@ class DB:
         *args: Any,
         **kwargs: Any,
     ) -> SqlQuery:
-        """Return the SqlQuery a typed op would produce, without executing it.
+        """Return the SqlQuery a typed op would produce, without executing.
 
-        Lets callers inspect or test SQL before it touches the DB. The
-        placeholder style follows the underlying adapter ($N for asyncpg,
-        ? for aiosqlite).
-
-            q = db.compose("get", User, id=1)
-            print(q.sql, q.params)
+        Thin wrapper over `etchdb.sql.compose` that fills in `placeholder`
+        from the live adapter. Use `sql.compose(...)` directly when you
+        don't have a DB instance.
         """
-        try:
-            fn = _COMPOSE_OPS[op]
-        except KeyError as e:
-            raise ValueError(f"Unknown op {op!r}. Expected one of: {sorted(_COMPOSE_OPS)}") from e
-        return fn(*args, placeholder=self._adapter.placeholder, **kwargs)
+        return sql.compose(op, *args, placeholder=self._adapter.placeholder, **kwargs)

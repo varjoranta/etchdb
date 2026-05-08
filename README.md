@@ -27,6 +27,16 @@ users = await db.query(User)                          # list of rows
 await db.update(User(id=alice.id, name="Alice B"))    # partial: email is preserved
 await db.delete(alice)
 
+# Add `where=` to AND extra equality filters onto the PK. Atomic, so
+# the scope check runs in the same statement as the update.
+await db.update(User(id=alice.id, name="Alice B"),
+                where={"email": "alice@example.com"})
+
+# Partial update without making your model lie about the schema:
+# patch() builds a Row with only the given fields set; no validation,
+# so models with required NOT NULL columns still flow through.
+await db.update(User.patch(id=alice.id, name="Alice B"))
+
 # Typed-result raw SQL (covers most joins)
 users = await db.fetch_models(User, """
     SELECT u.* FROM users u JOIN orders o ON o.user_id = u.id
@@ -35,7 +45,9 @@ users = await db.fetch_models(User, """
 
 # Untyped raw SQL (mirrors asyncpg)
 rows = await db.fetch("SELECT count(*) FROM events WHERE site_id = $1", site_id)
-val = await db.fetchval("SELECT count(*) FROM users")
+val = await db.fetchval("SELECT count(*) FROM users")  # always returns the count;
+                                                       # for non-aggregate selects,
+                                                       # fetchval returns None on no row.
 await db.execute("UPDATE users SET active = false WHERE id = $1", uid)
 
 # Transactions
@@ -47,9 +59,17 @@ async with db.transaction() as tx:
 q = db.compose("get", User, id=1)
 print(q.sql)     # SELECT id, name, email FROM users WHERE id = $1
 print(q.params)  # [1]
+
+# Same inspector without a live DB - useful in tests:
+from etchdb import sql
+q = sql.compose("get", User, id=1, placeholder=lambda i: f"${i + 1}")
 ```
 
-`insert` only emits the columns you actually set, so an unset `id` lets the database allocate one (SERIAL or INTEGER PRIMARY KEY). `update` does the same: a column you didn't touch keeps its current value rather than being clobbered. An explicit `None` counts as set in both cases.
+`insert` only emits the columns you actually set, so an unset `id` lets the database allocate one (SERIAL or INTEGER PRIMARY KEY); the returned Row reflects the DB's view (`RETURNING *`), so server-defaults like `id` and `created_at` are populated in place. `update` does the same: a column you didn't touch keeps its current value rather than being clobbered. An explicit `None` counts as set in both cases.
+
+`update` and `delete` use the value of every column in `__pk__` (default: `("id",)`) as the WHERE clause; override the class attribute for a composite or differently-named primary key. Add extra equality filters with `where={...}` for guarded updates: multi-tenant scoping like `where={"user_id": current_user}` is the canonical use case. Raw SQL is still the right tool when you need anything richer than equality.
+
+Use `Row.patch(**fields)` to build a partial Row that satisfies neither validation nor missing-required-field checks. It's the right shape when you want partial updates against a model with NOT NULL columns.
 
 ## Install
 
@@ -70,6 +90,29 @@ from etchdb.asyncpg import AsyncpgAdapter     # requires asyncpg
 
 # Bring your own pool
 db = DB(AsyncpgAdapter.from_pool(my_pool))
+```
+
+`from_url` keeps the construction surface tiny. For pool-init concerns
+(pgvector tuning, JSONB / ENUM codec registration, custom `min_size` /
+`max_size`), construct the pool yourself and pass it via `from_pool`.
+Example, registering a Postgres ENUM as a Python `str` via asyncpg's
+`set_type_codec`:
+
+```python
+import asyncpg
+from etchdb import DB
+from etchdb.asyncpg import AsyncpgAdapter
+
+async def init_conn(conn):
+    await conn.set_type_codec(
+        "memory_domain",          # the ENUM type name
+        encoder=str, decoder=str,
+        schema="public",
+        format="text",
+    )
+
+pool = await asyncpg.create_pool(url, init=init_conn, min_size=2, max_size=10)
+db = DB(AsyncpgAdapter.from_pool(pool))
 ```
 
 Both Postgres adapters take libpq-native `$1, $2, ...` placeholders in raw SQL. The psycopg adapter uses `AsyncRawCursor` so the `$N` form works there too; psycopg's default `%s` form is not used and will produce a Postgres syntax error.

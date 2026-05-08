@@ -1,6 +1,6 @@
 """Base class for typed table rows."""
 
-from typing import ClassVar
+from typing import Any, ClassVar, Self
 
 from pydantic import BaseModel
 
@@ -27,3 +27,11 @@ class Row(BaseModel):
 
     __table__: ClassVar[str]
     __pk__: ClassVar[tuple[str, ...]] = ("id",)
+
+    @classmethod
+    def patch(cls, **fields: Any) -> Self:
+        """Build a partial Row for `db.update` / `db.delete`, skipping
+        Pydantic validation so partials with missing required fields
+        work. NOT a general-purpose constructor: use `Cls(...)` for
+        fully-formed rows that should be validated."""
+        return cls.model_construct(**fields)

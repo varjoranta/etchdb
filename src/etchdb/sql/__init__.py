@@ -6,8 +6,8 @@ own `placeholder` callable so the same emitter works for both Postgres
 ($1, $2, ...) and SQLite (?, ?, ...).
 """
 
-from collections.abc import Callable
-from typing import Any
+from collections.abc import Callable, Mapping
+from typing import Any, Literal
 
 from etchdb.query import SqlQuery
 from etchdb.row import Row
@@ -111,68 +111,130 @@ def update(
     *,
     placeholder: Callable[[int], str],
     returning: str | list[str] | None = None,
+    where: Mapping[str, Any] | None = None,
 ) -> SqlQuery:
     """Build an UPDATE for `row` keyed by its primary key.
 
     Only fields in `model_fields_set` go into the SET clause, giving
     partial-update semantics: columns the caller didn't touch are
-    preserved. WHERE uses every field in `__pk__`. Raises ValueError if
-    any PK field is unset (no row to identify) or if no non-PK field is
-    set (nothing to update). Pass `returning="*"` to add RETURNING.
+    preserved. WHERE uses every field in `__pk__`, AND'd with any
+    extra equality filters from `where=`. The common multi-tenant
+    pattern is `update(row, where={"user_id": current_user_id})` so
+    the update is atomic with the ownership check.
+
+    Raises ValueError if any PK field is unset, if no non-PK field is
+    set, or if `where=` keys overlap with `__pk__`. Pass `returning="*"`
+    to add RETURNING.
     """
     table = _table_name(row)
-    _ensure_pk_set(row, "update")
     pk_set = set(row.__pk__)
+    where_fields, where_values = _pk_where(row, "update", where)
+
     set_fields = [
         f for f in type(row).model_fields if f in row.model_fields_set and f not in pk_set
     ]
-
     if not set_fields:
         raise ValueError(f"{type(row).__name__} has no non-PK fields to update")
 
     set_sql = _eq_clauses(set_fields, placeholder=placeholder, sep=", ")
-    pk_sql = _eq_clauses(list(row.__pk__), placeholder=placeholder, start=len(set_fields))
+    where_sql = _eq_clauses(where_fields, placeholder=placeholder, start=len(set_fields))
 
     set_values = [getattr(row, f) for f in set_fields]
-    pk_values = [getattr(row, f) for f in row.__pk__]
 
-    sql = f"UPDATE {table} SET {set_sql} WHERE {pk_sql}"
+    sql = f"UPDATE {table} SET {set_sql} WHERE {where_sql}"
     if returning is not None:
         sql += f" RETURNING {_format_columns(returning)}"
 
-    return SqlQuery(sql=sql, params=set_values + pk_values)
+    return SqlQuery(sql=sql, params=set_values + where_values)
 
 
-def delete(row: Row, *, placeholder: Callable[[int], str]) -> SqlQuery:
-    """Build a DELETE for `row` keyed by its primary key.
+def delete(
+    row: Row,
+    *,
+    placeholder: Callable[[int], str],
+    where: Mapping[str, Any] | None = None,
+) -> SqlQuery:
+    """Build a DELETE for `row` keyed by its primary key, optionally
+    AND'd with extra equality filters from `where=`.
 
-    Raises ValueError if any PK field is unset (no row to identify).
+    Raises ValueError if any PK field is unset (no row to identify),
+    or if `where=` keys overlap with `__pk__`.
     """
     table = _table_name(row)
-    _ensure_pk_set(row, "delete")
-    pk_sql = _eq_clauses(list(row.__pk__), placeholder=placeholder)
-    pk_values = [getattr(row, f) for f in row.__pk__]
+    where_fields, where_values = _pk_where(row, "delete", where)
 
-    sql = f"DELETE FROM {table} WHERE {pk_sql}"
-    return SqlQuery(sql=sql, params=pk_values)
+    where_sql = _eq_clauses(where_fields, placeholder=placeholder)
+    sql = f"DELETE FROM {table} WHERE {where_sql}"
+    return SqlQuery(sql=sql, params=where_values)
+
+
+_OPS = {
+    "get": select_one,
+    "query": select_many,
+    "insert": insert,
+    "update": update,
+    "delete": delete,
+}
+
+
+def compose(
+    op: Literal["get", "query", "insert", "update", "delete"],
+    *args: Any,
+    placeholder: Callable[[int], str],
+    **kwargs: Any,
+) -> SqlQuery:
+    """Build the SqlQuery for a typed op without a live adapter.
+
+    Useful in tests, scripts, and any code that wants to inspect SQL
+    without opening a connection. The DB facade's `compose` method is
+    a thin wrapper that fills in `placeholder` from the live adapter
+    so callers don't have to.
+
+        from etchdb import sql
+
+        pg = lambda i: f"${i + 1}"
+        q = sql.compose("get", User, id=1, placeholder=pg)
+        assert q.sql == "SELECT id, name FROM users WHERE id = $1 LIMIT 1"
+    """
+    try:
+        fn = _OPS[op]
+    except KeyError as e:
+        raise ValueError(f"Unknown op {op!r}. Expected one of: {sorted(_OPS)}") from e
+    return fn(*args, placeholder=placeholder, **kwargs)
 
 
 # --- helpers ----------------------------------------------------------
 
 
-def _ensure_pk_set(row: Row, op: str) -> None:
-    """Raise ValueError if any field in __pk__ is not in model_fields_set.
+def _pk_where(row: Row, op: str, where: Mapping[str, Any] | None) -> tuple[list[str], list[Any]]:
+    """Validate and build the WHERE field+value lists for `update`/`delete`.
 
-    Without this check, an unset PK field would yield `WHERE id = NULL`,
-    which matches no rows: the caller's update or delete becomes a
-    silent no-op. Failing loudly catches "I forgot to set the PK".
+    Asserts every PK field is set on `row` (else `WHERE id = NULL`
+    silently matches nothing) and that `where=` does not re-specify a
+    PK field (else `id = $1 AND id = $2` would either confuse the
+    reader or match nothing). Returns ordered (field_names, values),
+    PK first, `where=` second.
     """
-    unset = [f for f in row.__pk__ if f not in row.model_fields_set]
-    if unset:
+    unset_pk = [f for f in row.__pk__ if f not in row.model_fields_set]
+    if unset_pk:
         raise ValueError(
-            f"Cannot {op}: primary key field(s) {unset} not set on this "
+            f"Cannot {op}: primary key field(s) {unset_pk} not set on this "
             f"{type(row).__name__}. Set them so the row can be identified."
         )
+    if where:
+        overlap = set(row.__pk__) & where.keys()
+        if overlap:
+            raise ValueError(
+                f"where= keys overlap with __pk__: {sorted(overlap)}. "
+                f"PK fields are already in WHERE; remove them from where=."
+            )
+
+    fields = list(row.__pk__)
+    values: list[Any] = [getattr(row, f) for f in row.__pk__]
+    if where:
+        fields.extend(where)
+        values.extend(where.values())
+    return fields, values
 
 
 def _table_name(row_or_class: Row | type[Row]) -> str:

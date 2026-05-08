@@ -308,12 +308,88 @@ def test_update_attribute_assignment_tracks_in_fields_set():
     assert q.params == ["Alice", "new@example.com", 1]
 
 
+def test_update_with_extra_where_pg():
+    """`where=` AND's extra equality filters onto the PK-only WHERE."""
+    user = User(id=1, name="Alice")
+    q = sql.update(user, placeholder=pg, where={"tenant_id": 5})
+
+    assert q.sql == "UPDATE users SET name = $1 WHERE id = $2 AND tenant_id = $3"
+    assert q.params == ["Alice", 1, 5]
+
+
+def test_update_with_extra_where_sqlite():
+    user = User(id=1, name="Alice")
+    q = sql.update(user, placeholder=lite, where={"tenant_id": 5})
+
+    assert q.sql == "UPDATE users SET name = ? WHERE id = ? AND tenant_id = ?"
+    assert q.params == ["Alice", 1, 5]
+
+
+def test_update_with_returning_and_extra_where():
+    user = User(id=1, name="Alice")
+    q = sql.update(user, placeholder=pg, returning="*", where={"tenant_id": 5})
+
+    assert q.sql == ("UPDATE users SET name = $1 WHERE id = $2 AND tenant_id = $3 RETURNING *")
+
+
+def test_update_where_overlapping_pk_raises():
+    """Re-specifying a PK field in where= would produce a confusing
+    `id = $a AND id = $b` clause; reject it."""
+    user = User(id=1, name="Alice")
+    with pytest.raises(ValueError, match=r"overlap with __pk__"):
+        sql.update(user, placeholder=pg, where={"id": 99})
+
+
+def test_update_with_empty_where_is_same_as_no_where():
+    """An empty mapping adds no extra filters, identical to where=None."""
+    user = User(id=1, name="Alice")
+    q_none = sql.update(user, placeholder=pg)
+    q_empty = sql.update(user, placeholder=pg, where={})
+    assert q_empty.sql == q_none.sql
+    assert q_empty.params == q_none.params
+
+
+def test_delete_with_empty_where_is_same_as_no_where():
+    user = User(id=1, name="Alice")
+    q_none = sql.delete(user, placeholder=pg)
+    q_empty = sql.delete(user, placeholder=pg, where={})
+    assert q_empty.sql == q_none.sql
+    assert q_empty.params == q_none.params
+
+
 def test_update_unset_pk_raises():
     """Without an explicit id, WHERE would silently match nothing; raise
     instead so the caller notices."""
     user = User(name="Alice")
     with pytest.raises(ValueError, match="primary key"):
         sql.update(user, placeholder=pg)
+
+
+def test_update_via_row_patch_emits_only_set_fields():
+    """Row.patch lets a model with required fields produce a partial
+    update without Optional-everywhere lying about the schema."""
+    q = sql.update(User.patch(id=1, name="Alice B"), placeholder=pg)
+
+    assert q.sql == "UPDATE users SET name = $1 WHERE id = $2"
+    assert q.params == ["Alice B", 1]
+
+
+def test_row_patch_skips_validation():
+    """patch() uses model_construct, so required fields don't need
+    placeholder values when only updating a subset."""
+
+    class StrictNote(Row):
+        __table__ = "notes"
+        id: int
+        body: str  # NOT NULL in DB
+        status: str  # NOT NULL in DB
+
+    # Plain construction would raise ValidationError for missing body.
+    note = StrictNote.patch(id=1, status="archived")
+    assert note.model_fields_set == {"id", "status"}
+    q = sql.update(note, placeholder=pg)
+    assert q.sql == "UPDATE notes SET status = $1 WHERE id = $2"
+    assert q.params == ["archived", 1]
 
 
 def test_update_partial_composite_pk_raises():
@@ -362,6 +438,30 @@ def test_delete_unset_pk_raises():
         sql.delete(user, placeholder=pg)
 
 
+def test_delete_with_extra_where_pg():
+    # delete only consults the PK + where=, but the Row's other fields
+    # need to satisfy Pydantic validation at construction time.
+    user = User(id=1, name="Alice")
+    q = sql.delete(user, placeholder=pg, where={"tenant_id": 5})
+
+    assert q.sql == "DELETE FROM users WHERE id = $1 AND tenant_id = $2"
+    assert q.params == [1, 5]
+
+
+def test_delete_with_extra_where_sqlite():
+    user = User(id=1, name="Alice")
+    q = sql.delete(user, placeholder=lite, where={"tenant_id": 5})
+
+    assert q.sql == "DELETE FROM users WHERE id = ? AND tenant_id = ?"
+    assert q.params == [1, 5]
+
+
+def test_delete_where_overlapping_pk_raises():
+    user = User(id=1, name="Alice")
+    with pytest.raises(ValueError, match=r"overlap with __pk__"):
+        sql.delete(user, placeholder=pg, where={"id": 99})
+
+
 # --- error cases -----------------------------------------------------
 
 
@@ -380,3 +480,36 @@ def test_select_without_table_raises():
 
     with pytest.raises(ValueError, match="__table__"):
         sql.select_one(NoTable, placeholder=pg, id=1)
+
+
+# --- compose ---------------------------------------------------------
+
+
+def test_sql_compose_get_without_adapter():
+    """sql.compose works in plain Python: no DB, no adapter, just a
+    placeholder callable."""
+    q = sql.compose("get", User, placeholder=pg, id=1)
+
+    assert q.sql == "SELECT id, name, email FROM users WHERE id = $1 LIMIT 1"
+    assert q.params == [1]
+
+
+def test_sql_compose_for_each_op():
+    user = User(id=1, name="Alice", email="a@x")
+
+    q_insert = sql.compose("insert", user, placeholder=pg)
+    assert q_insert.sql.startswith("INSERT INTO users")
+
+    q_update = sql.compose("update", user, placeholder=pg)
+    assert q_update.sql.startswith("UPDATE users")
+
+    q_delete = sql.compose("delete", user, placeholder=pg)
+    assert q_delete.sql.startswith("DELETE FROM users")
+
+    q_query = sql.compose("query", User, placeholder=pg, limit=5)
+    assert "LIMIT" in q_query.sql
+
+
+def test_sql_compose_unknown_op_raises():
+    with pytest.raises(ValueError, match="Unknown op"):
+        sql.compose("frobnicate", User, placeholder=pg)  # type: ignore[arg-type]
