@@ -59,8 +59,8 @@ class DB:
 
         Supported schemes:
           postgresql://, postgres://, postgresql+asyncpg://  -> asyncpg
+          postgresql+psycopg://                              -> psycopg
           sqlite:///, sqlite+aiosqlite:///                   -> aiosqlite
-          postgresql+psycopg://                              -> NotImplementedError
 
         Driver subpackages are imported lazily so users only need the
         driver they actually use installed.
@@ -74,12 +74,15 @@ class DB:
             if scheme == "postgresql+asyncpg":
                 url = "postgresql://" + url.split("://", 1)[1]
             adapter: AdapterBase = await AsyncpgAdapter.from_url(url)
+        elif scheme == "postgresql+psycopg":
+            from etchdb.psycopg import PsycopgAdapter
+
+            url = "postgresql://" + url.split("://", 1)[1]
+            adapter = await PsycopgAdapter.from_url(url)
         elif scheme in {"sqlite", "sqlite+aiosqlite"}:
             from etchdb.aiosqlite import AiosqliteAdapter
 
             adapter = await AiosqliteAdapter.from_url(url)
-        elif scheme == "postgresql+psycopg":
-            raise NotImplementedError("psycopg adapter not yet shipped")
         else:
             raise ValueError(f"Unsupported URL scheme: {scheme!r}")
 

@@ -72,6 +72,8 @@ from etchdb.asyncpg import AsyncpgAdapter     # requires asyncpg
 db = DB(AsyncpgAdapter.from_pool(my_pool))
 ```
 
+Both Postgres adapters take libpq-native `$1, $2, ...` placeholders in raw SQL. The psycopg adapter uses `AsyncRawCursor` so the `$N` form works there too; psycopg's default `%s` form is not used and will produce a Postgres syntax error.
+
 ## Why
 
 Most Python ORMs are heavy, opinionated, and leak at the seams when you reach for pgvector or PostGIS. Raw asyncpg works, but every project ends up writing the same Pydantic-bridge code. etchdb closes that gap without becoming a framework.

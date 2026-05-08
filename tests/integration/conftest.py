@@ -1,10 +1,11 @@
 """Fixtures for integration tests across SQLite (always) and Postgres (Docker).
 
 The `sqlite_db` fixture runs against an in-memory aiosqlite database and
-is always available. The `postgres_db` fixture skips when Docker isn't
-running on localhost:5532. The parametrized `db` fixture runs each test
-against both backends; per-param skipping means SQLite tests still run
-when Postgres is unavailable.
+is always available. The `postgres_asyncpg_db` and `postgres_psycopg_db`
+fixtures skip when Docker isn't running on localhost:5532. The
+parametrized `db` fixture runs each test against every backend in turn;
+per-param skipping means SQLite tests still run when Postgres is
+unavailable.
 """
 
 import os
@@ -15,10 +16,12 @@ import pytest_asyncio
 
 from etchdb import DB
 
-POSTGRES_URL = os.environ.get(
-    "ETCHDB_TEST_POSTGRES_URL",
-    "postgresql+asyncpg://etchdb:etchdb-test-password@localhost:5532/etchdb_test",
+POSTGRES_DSN = os.environ.get(
+    "ETCHDB_TEST_POSTGRES_DSN",
+    "etchdb:etchdb-test-password@localhost:5532/etchdb_test",
 )
+POSTGRES_ASYNCPG_URL = f"postgresql+asyncpg://{POSTGRES_DSN}"
+POSTGRES_PSYCOPG_URL = f"postgresql+psycopg://{POSTGRES_DSN}"
 
 
 def _postgres_available() -> bool:
@@ -53,24 +56,36 @@ async def sqlite_db():
     await db.close()
 
 
-@pytest_asyncio.fixture
-async def postgres_db():
+async def _open_postgres(url: str) -> DB:
     if not _postgres_available():
         pytest.skip("Postgres not available on localhost:5532. Run `make db-up`.")
-    db = await DB.from_url(POSTGRES_URL)
+    db = await DB.from_url(url)
     await db.execute("DROP TABLE IF EXISTS users CASCADE")
     await db.execute("DROP TABLE IF EXISTS user_roles CASCADE")
     for stmt in POSTGRES_SCHEMA:
         await db.execute(stmt)
+    return db
+
+
+@pytest_asyncio.fixture
+async def postgres_asyncpg_db():
+    db = await _open_postgres(POSTGRES_ASYNCPG_URL)
     yield db
     await db.close()
 
 
-@pytest.fixture(params=["sqlite_db", "postgres_db"])
+@pytest_asyncio.fixture
+async def postgres_psycopg_db():
+    db = await _open_postgres(POSTGRES_PSYCOPG_URL)
+    yield db
+    await db.close()
+
+
+@pytest.fixture(params=["sqlite_db", "postgres_asyncpg_db", "postgres_psycopg_db"])
 def db(request):
     """Parametrized fixture that yields each backend in turn.
 
-    Lazy resolution via `getfixturevalue` means the postgres_db skip
-    triggers per-param, not for the whole test.
+    Lazy resolution via `getfixturevalue` means the postgres skips
+    trigger per-param, not for the whole test.
     """
     return request.getfixturevalue(request.param)

@@ -63,6 +63,7 @@ Thumbs.db
 .uv/
 uv.lock
 
-# Local notes / scratch
+# Local notes / scratch / handoffs (not part of public history)
 scratch/
 TODO.local.md
+.local/
