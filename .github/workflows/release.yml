@@ -1,0 +1,65 @@
+name: Release
+
+# Pushing a `vX.Y.Z` tag is the only ship action: this workflow runs unit
+# tests, builds sdist + wheel, publishes to PyPI, and creates a GitHub
+# Release (with the dist files attached) in one motion. Edit the release
+# body afterwards via `gh release edit` if you want hand-curated notes
+# beyond the auto-generated commit list.
+
+on:
+  push:
+    tags:
+      - 'v*'
+
+# Creating a release writes to the repo's releases collection; the
+# default-issued GITHUB_TOKEN needs that permission explicitly.
+permissions:
+  contents: write
+
+# Two pushes of the same tag (or a tag move + repush) shouldn't fight
+# each other on PyPI uploads.
+concurrency:
+  group: release-${{ github.ref }}
+  cancel-in-progress: false
+
+jobs:
+  release:
+    runs-on: ubuntu-latest
+    steps:
+      - name: Checkout
+        uses: actions/checkout@v4
+        with:
+          # Full history so `gh release create --generate-notes` can
+          # diff against the previous tag for the auto-notes body.
+          fetch-depth: 0
+
+      - name: Install uv (with Python)
+        uses: astral-sh/setup-uv@v5
+        with:
+          python-version: "3.13"
+
+      - name: Install dependencies
+        run: uv sync --extra all --extra dev
+
+      - name: Run unit tests
+        # Unit tests only -- integration tests need a Postgres container
+        # and belong in a separate CI workflow on every push / PR.
+        # Treat this as a release safety net, not full CI.
+        run: uv run pytest tests/unit -q
+
+      - name: Build sdist + wheel
+        run: uv build
+
+      - name: Publish to PyPI
+        env:
+          UV_PUBLISH_TOKEN: ${{ secrets.PYPI_API_TOKEN }}
+        run: uv publish
+
+      - name: Create GitHub Release
+        env:
+          GH_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+        run: |
+          gh release create "${GITHUB_REF_NAME}" \
+            --title "${GITHUB_REF_NAME}" \
+            --generate-notes \
+            dist/*.whl dist/*.tar.gz
