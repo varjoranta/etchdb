@@ -37,6 +37,12 @@ await db.update(User(id=alice.id, name="Alice B"),
 # so models with required NOT NULL columns still flow through.
 await db.update(User.patch(id=alice.id, name="Alice B"))
 
+# Stream every matching row (paginated, won't load the whole table at once)
+# Uses offset pagination, so cost scales O(N**2) on huge tables; for those,
+# loop with a raw keyset query (WHERE id > last_id ORDER BY id LIMIT n).
+async for user in db.iter_rows(User, batch_size=500):
+    process(user)
+
 # Typed-result raw SQL (covers most joins)
 users = await db.fetch_models(User, """
     SELECT u.* FROM users u JOIN orders o ON o.user_id = u.id

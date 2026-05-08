@@ -135,6 +135,39 @@ class DB:
         )
         return await self.fetch_models(model, q.sql, *q.params)
 
+    async def iter_rows(
+        self,
+        model: type[Row],
+        *,
+        batch_size: int = 500,
+        order_by: str | list[str] | None = None,
+        **filters: Any,
+    ) -> AsyncIterator[Row]:
+        """Stream every matching row, paged by `batch_size`. Default
+        `order_by` is `__pk__` so pagination stays stable across pages.
+
+        Uses offset pagination, which is O(N^2) over huge tables. For
+        full scans of large tables, prefer a raw keyset loop instead.
+        """
+        if order_by is None:
+            order_by = list(model.__pk__)
+        offset = 0
+        while True:
+            page = await self.query(
+                model,
+                limit=batch_size,
+                offset=offset,
+                order_by=order_by,
+                **filters,
+            )
+            for row in page:
+                yield row
+            # Short page means we're past the end; skip the empty
+            # round-trip the next iteration would do.
+            if len(page) < batch_size:
+                return
+            offset += batch_size
+
     async def insert(self, row: Row) -> Row:
         q = sql.insert(row, placeholder=self._adapter.placeholder)
         result = await self._adapter.fetchrow(q.sql, *q.params)
