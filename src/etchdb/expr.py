@@ -48,9 +48,17 @@ class Inc(_Expr):
     """Atomic increment: `column = column + by`.
 
     `Inc()` adds 1; `Inc(by=5)` adds 5; `Inc(by=-1)` decrements.
-    Lets-or-truth-be-told: nothing forbids a non-int `by`, so the
-    same shape works for any column whose type supports `+` (e.g.
-    interval columns, decimal accumulators).
+    Nothing forbids a non-int `by`, so the same shape works for any
+    column whose type supports `+` (interval columns, decimal
+    accumulators).
+
+    Two restrictions:
+    - Construct rows that hold an `Inc` via `Row.patch(...)`. A
+      sentinel does not pass Pydantic validation for the field's
+      declared type, so plain `Row(...)` would raise.
+    - `Inc` is accepted by `db.update` only. `db.insert` /
+      `db.insert_many` reject it (incrementing a row that does not
+      exist yet is undefined).
     """
 
     __slots__ = ("by",)
@@ -70,6 +78,15 @@ class Now(_Expr):
     `CURRENT_TIMESTAMP` is SQL-standard and works on both Postgres
     (returns timestamptz) and SQLite (returns ISO-8601 text). Use a
     column type that matches your driver's expectation.
+
+    Two restrictions:
+    - Construct rows that hold a `Now` via `Row.patch(...)`. A
+      sentinel does not pass Pydantic validation for the field's
+      declared type, so plain `Row(...)` would raise.
+    - `Now` is accepted by `db.update` only. `db.insert` /
+      `db.insert_many` reject it; for a server-default insert
+      timestamp, prefer a column `DEFAULT CURRENT_TIMESTAMP` in the
+      schema.
     """
 
     __slots__ = ()

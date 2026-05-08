@@ -29,6 +29,14 @@ if TYPE_CHECKING:
 _PARAM_LIMIT = 32766
 
 
+def _has_empty_collection_filter(filters: Mapping[str, Any] | None) -> bool:
+    """An empty list / tuple filter would emit `IN ()` (invalid on
+    Postgres); short-circuit to "no rows" without round-tripping."""
+    if not filters:
+        return False
+    return any(isinstance(v, list | tuple) and not v for v in filters.values())
+
+
 def _hydrate(model_or_row: type[Row] | Row, row: dict[str, Any] | None) -> Row | None:
     """Build a Row from a fetchrow result, or return None when there is no row.
 
@@ -125,6 +133,8 @@ class DB:
         return _hydrate(model, row)
 
     async def get(self, model: type[Row], **filters: Any) -> Row | None:
+        if _has_empty_collection_filter(filters):
+            return None
         q = sql.select_one(model, placeholder=self._adapter.placeholder, **filters)
         return await self.fetch_model(model, q.sql, *q.params)
 
@@ -137,6 +147,8 @@ class DB:
         order_by: str | list[str] | None = None,
         **filters: Any,
     ) -> list[Row]:
+        if _has_empty_collection_filter(filters):
+            return []
         q = sql.select_many(
             model,
             placeholder=self._adapter.placeholder,
@@ -163,6 +175,8 @@ class DB:
         """
         if batch_size < 1:
             raise ValueError(f"batch_size must be >= 1, got {batch_size}")
+        if _has_empty_collection_filter(filters):
+            return
         if order_by is None:
             order_by = list(model.__pk__)
         offset = 0
@@ -244,12 +258,16 @@ class DB:
     async def update(self, row: Row, *, where: Mapping[str, Any] | None = None) -> Row | None:
         """Update `row` by PK, AND'd with `where=`. Returns the updated
         row, or None if PK + `where=` matched no row."""
+        if _has_empty_collection_filter(where):
+            return None
         q = sql.update(row, placeholder=self._adapter.placeholder, returning="*", where=where)
         result = await self._adapter.fetchrow(q.sql, *q.params)
         return _hydrate(row, result)
 
     async def delete(self, row: Row, *, where: Mapping[str, Any] | None = None) -> None:
         """Delete `row` by PK, AND'd with `where=`."""
+        if _has_empty_collection_filter(where):
+            return
         q = sql.delete(row, placeholder=self._adapter.placeholder, where=where)
         await self._adapter.execute(q.sql, *q.params)
 

@@ -68,11 +68,22 @@ def select_one(
 ) -> SqlQuery:
     """Build a SELECT for at most one row matching `filters`.
 
-    Filters are joined with AND. A `None` value emits `IS NULL`; a
-    list / tuple value emits `IN (...)`. Anything else binds as a
-    scalar `= $N`. Pass no filters to fetch the first row in the
-    table (mostly useful for tests / single-row tables).
+    Filters are joined with AND. A `None` value emits `IS NULL`.
+    `select_one` is the single-row verb, so list / tuple filters are
+    rejected (they would produce `IN (...) LIMIT 1` and silently
+    return "the first match", which is rarely the intent); use
+    `select_many` for those instead. Pass no filters to fetch the
+    first row in the table (mostly useful for tests / single-row
+    tables).
     """
+    list_fields = [f for f, v in filters.items() if isinstance(v, list | tuple)]
+    if list_fields:
+        raise ValueError(
+            f"select_one does not accept list / tuple filters: {list_fields}. "
+            f"Use select_many (or db.query) for IN-style filters; "
+            f"select_one is the single-row verb."
+        )
+
     table = _table_name(row_class)
     columns = ", ".join(row_class.model_fields)
 
