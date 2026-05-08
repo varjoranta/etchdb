@@ -43,7 +43,8 @@ await db.update(User(id=alice.id, name="Alice B"),
 await db.update(User.patch(id=alice.id, name="Alice B"))
 
 # Atomic column expressions in SET (use Row.patch so the sentinels
-# slip past validation):
+# slip past validation). Counter / Article are user-defined Row
+# subclasses alongside User, with an int counter and a timestamp:
 from etchdb import Inc, Now
 await db.update(Counter.patch(id=1, n=Inc()))           # n = n + 1
 await db.update(Article.patch(id=1, updated_at=Now()))  # = CURRENT_TIMESTAMP
@@ -190,6 +191,8 @@ Out of scope so far. A small forward-only, file-based migration helper (no autog
 ## Under consideration
 
 Comparison sentinels for `where=` filters (`Gt`, `Gte`, `Lt`, `Lte`, accepting either a scalar or the existing `Now()` sentinel) are on the table for a later release. Scope would stay narrow: single-column inequality only; compound predicates, `LIKE`, and `BETWEEN` would still go through raw SQL. Holding the API for more real use cases before committing. Until then, raw SQL via `db.fetch_models(User, "SELECT * FROM users WHERE expires_at > NOW()")` is the canonical answer; that's what etchdb's first-class raw-SQL escape valve is for.
+
+`Inc` / `Now` composing with `on_conflict="upsert"` is a related deferred shape: the create-or-increment pattern would let `db.insert(RateCounter(...), on_conflict="upsert")` carry an `Inc(by=N)` for the conflict SET, but the INSERT branch still needs a literal initial value, so the row would have to express two values per column. Today the sentinels are rejected by `db.insert` / `db.insert_many` outright; raw SQL with `INSERT ... ON CONFLICT (key) DO UPDATE SET count = table.count + 1` covers the case in one statement.
 
 ## Built with AI assistance
 

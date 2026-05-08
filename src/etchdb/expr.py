@@ -58,7 +58,9 @@ class Inc(_Expr):
       declared type, so plain `Row(...)` would raise.
     - `Inc` is accepted by `db.update` only. `db.insert` /
       `db.insert_many` reject it (incrementing a row that does not
-      exist yet is undefined).
+      exist yet is undefined). The rejection covers `on_conflict=
+      "upsert"` too: the INSERT branch still needs a literal initial
+      value. For create-or-increment, drop to raw SQL.
     """
 
     __slots__ = ("by",)
@@ -84,9 +86,10 @@ class Now(_Expr):
       sentinel does not pass Pydantic validation for the field's
       declared type, so plain `Row(...)` would raise.
     - `Now` is accepted by `db.update` only. `db.insert` /
-      `db.insert_many` reject it; for a server-default insert
-      timestamp, prefer a column `DEFAULT CURRENT_TIMESTAMP` in the
-      schema.
+      `db.insert_many` reject it, including under `on_conflict=
+      "upsert"`; the INSERT branch still needs a literal initial
+      value. For a server-default insert timestamp, prefer a column
+      `DEFAULT CURRENT_TIMESTAMP` in the schema.
     """
 
     __slots__ = ()

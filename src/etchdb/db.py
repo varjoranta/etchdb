@@ -207,7 +207,8 @@ class DB:
         returned unchanged (so server-defaults are NOT populated).
         `on_conflict="upsert"` appends `ON CONFLICT (<pk>) DO UPDATE
         SET <non-pk> = excluded.<non-pk>`, so the returned row always
-        reflects the DB's view.
+        reflects the DB's view. Inc / Now sentinels do not compose
+        with upsert; for create-or-increment, drop to raw SQL.
         """
         q = sql.insert(row, placeholder=self._adapter.placeholder, on_conflict=on_conflict)
         result = await self._adapter.fetchrow(q.sql, *q.params)
@@ -226,7 +227,9 @@ class DB:
         cover thousands of rows. `on_conflict="ignore"` appends
         `ON CONFLICT DO NOTHING`; `on_conflict="upsert"` appends
         `ON CONFLICT (<pk>) DO UPDATE SET <non-pk> = excluded.<non-pk>`.
-        Empty `rows` is a no-op."""
+        Inc / Now sentinels do not compose with upsert; for
+        create-or-increment, drop to raw SQL. Empty `rows` is a
+        no-op."""
         if not rows:
             return
         cols_per_row = sum(1 for f in type(rows[0]).model_fields if f in rows[0].model_fields_set)
