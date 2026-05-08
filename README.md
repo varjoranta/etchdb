@@ -187,9 +187,13 @@ The design also targets AI-assisted development: predictable verbs, no metaclass
 
 Out of scope so far. A small forward-only, file-based migration helper (no autogenerate, no rollback, no DAG) is planned for a later release. etchdb owns no schema state today, so any external tool slots in fine in the meantime: Alembic if you also use SQLAlchemy, dbmate or sqitch if you don't, or a few `db.execute` calls in your bootstrap path.
 
+## Under consideration
+
+Comparison sentinels for `where=` filters (`Gt`, `Gte`, `Lt`, `Lte`, accepting either a scalar or the existing `Now()` sentinel) are on the table for a later release. Scope would stay narrow: single-column inequality only; compound predicates, `LIKE`, and `BETWEEN` would still go through raw SQL. Holding the API for more real use cases before committing. Until then, raw SQL via `db.fetch_models(User, "SELECT * FROM users WHERE expires_at > NOW()")` is the canonical answer; that's what etchdb's first-class raw-SQL escape valve is for.
+
 ## Built with AI assistance
 
-Built with Claude Code as the primary development assistant. Design, code, and commits are reviewed and shipped by Hannu Varjoranta. Building in public, openly using AI tooling, is part of the project's premise.
+Built with a mix of AI tools for writing and reviewing code: primarily Claude Code, with Codex and occasionally Gemini for second opinions, and not limited to these. spegl.ing pattern research is in active use alongside them. Design, code, and commits are reviewed and shipped by Hannu Varjoranta. Building in public, openly using AI tooling, is part of the project's premise.
 
 ## License
 
