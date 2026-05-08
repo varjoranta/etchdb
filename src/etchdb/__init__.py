@@ -5,6 +5,7 @@ from etchdb.errors import (
     EtchdbError,
     IntegrityError,
     OperationalError,
+    UndefinedColumnError,
     UndefinedTableError,
 )
 from etchdb.query import SqlQuery
@@ -19,6 +20,7 @@ __all__ = [
     "OperationalError",
     "Row",
     "SqlQuery",
+    "UndefinedColumnError",
     "UndefinedTableError",
     "__version__",
 ]

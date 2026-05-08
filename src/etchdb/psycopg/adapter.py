@@ -52,6 +52,8 @@ def _map_exception(exc: BaseException) -> errors.EtchdbError | None:
         return errors.IntegrityError(str(exc))
     if isinstance(exc, psycopg.errors.UndefinedTable):
         return errors.UndefinedTableError(str(exc))
+    if isinstance(exc, psycopg.errors.UndefinedColumn):
+        return errors.UndefinedColumnError(str(exc))
     if isinstance(exc, psycopg.errors.OperationalError | psycopg.errors.InterfaceError):
         return errors.OperationalError(str(exc))
     return None

@@ -36,6 +36,8 @@ def _map_exception(exc: BaseException) -> errors.EtchdbError | None:
         return errors.IntegrityError(str(exc))
     if isinstance(exc, asyncpg.exceptions.UndefinedTableError):
         return errors.UndefinedTableError(str(exc))
+    if isinstance(exc, asyncpg.exceptions.UndefinedColumnError):
+        return errors.UndefinedColumnError(str(exc))
     if isinstance(
         exc,
         asyncpg.exceptions.InvalidPasswordError

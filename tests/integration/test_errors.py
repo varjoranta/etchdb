@@ -9,7 +9,7 @@ underlying error.
 
 import pytest
 
-from etchdb import DB, IntegrityError, UndefinedTableError
+from etchdb import DB, IntegrityError, UndefinedColumnError, UndefinedTableError
 from tests._models import User
 
 
@@ -26,6 +26,16 @@ async def test_unique_violation_raises_integrity_error(db: DB):
 async def test_missing_table_raises_undefined_table_error(db: DB):
     with pytest.raises(UndefinedTableError):
         await db.fetch("SELECT * FROM nonexistent_etchdb_table_xxxxx")
+
+
+async def test_missing_column_raises_undefined_column_error(db: DB):
+    """Missing column is a distinct schema error from missing table.
+    Each driver maps to UndefinedColumnError so application code can
+    catch the same etchdb type regardless of the backend (where
+    earlier the SQLite path mislabeled it as UndefinedTableError and
+    the Postgres paths leaked the native driver exception)."""
+    with pytest.raises(UndefinedColumnError):
+        await db.fetch("SELECT nonexistent_column_xxxxx FROM users")
 
 
 async def test_typed_errors_inherit_etchdb_error(db: DB):

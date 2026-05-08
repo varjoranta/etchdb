@@ -32,6 +32,10 @@ class UndefinedTableError(EtchdbError):
     """Raised when a query references a table that does not exist."""
 
 
+class UndefinedColumnError(EtchdbError):
+    """Raised when a query references a column that does not exist."""
+
+
 class OperationalError(EtchdbError):
     """Raised on connection-level or operational failures (server
     unreachable, authentication failure, lost connection, etc.)."""

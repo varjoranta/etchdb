@@ -27,12 +27,14 @@ def _map_exception(exc: BaseException) -> errors.EtchdbError | None:
     if isinstance(exc, sqlite3.IntegrityError):
         return errors.IntegrityError(str(exc))
     if isinstance(exc, sqlite3.OperationalError):
-        # sqlite3.OperationalError covers both "no such table" and
-        # connection-level failures; sqlite3 has no richer subclass,
-        # so disambiguate by message text.
+        # sqlite3.OperationalError covers schema lookup failures and
+        # connection-level failures alike; sqlite3 has no richer
+        # subclass, so disambiguate by message text.
         msg = str(exc).lower()
-        if "no such table" in msg or "no such column" in msg:
+        if "no such table" in msg:
             return errors.UndefinedTableError(str(exc))
+        if "no such column" in msg:
+            return errors.UndefinedColumnError(str(exc))
         return errors.OperationalError(str(exc))
     return None
 
