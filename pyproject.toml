@@ -1,6 +1,6 @@
 [project]
 name = "etchdb"
-version = "0.1.0"
+version = "0.2.0"
 description = "Minimal async DB layer for Python. Typed CRUD over Pydantic, raw SQL when you need it"
 readme = "README.md"
 requires-python = ">=3.12"
