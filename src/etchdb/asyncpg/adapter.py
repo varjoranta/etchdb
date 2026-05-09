@@ -132,6 +132,10 @@ class AsyncpgAdapter(AdapterBase):
         async with _wrap_errors(), self._pool.acquire() as conn:
             return _rowcount_from_status(await conn.execute(sql, *params))
 
+    async def execute_script(self, sql: str) -> None:
+        async with _wrap_errors(), self._pool.acquire() as conn:
+            await conn.execute(sql)
+
     async def fetch(self, sql: str, *params: Any) -> list[dict[str, Any]]:
         async with _wrap_errors(), self._pool.acquire() as conn:
             records = await conn.fetch(sql, *params)
@@ -169,6 +173,10 @@ class _AsyncpgConnAdapter(AdapterBase):
     async def execute(self, sql: str, *params: Any) -> int:
         async with _wrap_errors():
             return _rowcount_from_status(await self._conn.execute(sql, *params))
+
+    async def execute_script(self, sql: str) -> None:
+        async with _wrap_errors():
+            await self._conn.execute(sql)
 
     async def fetch(self, sql: str, *params: Any) -> list[dict[str, Any]]:
         async with _wrap_errors():

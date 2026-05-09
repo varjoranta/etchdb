@@ -37,6 +37,18 @@ class AdapterBase(ABC):
         ...
 
     @abstractmethod
+    async def execute_script(self, sql: str) -> None:
+        """Execute one or more SQL statements with no parameters.
+
+        Used by the migration runner for files that may contain
+        multiple statements separated by `;`. asyncpg / psycopg accept
+        multi-statement SQL through the regular execute path;
+        aiosqlite wraps `sqlite3.executescript`, which auto-commits
+        any pending transaction (a sqlite3 stdlib behavior).
+        """
+        ...
+
+    @abstractmethod
     async def fetch(self, sql: str, *params: Any) -> list[dict[str, Any]]: ...
 
     @abstractmethod

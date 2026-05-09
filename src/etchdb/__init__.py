@@ -9,6 +9,7 @@ from etchdb.errors import (
     UndefinedTableError,
 )
 from etchdb.expr import Inc, Now
+from etchdb.migrations import MigrationStatus
 from etchdb.query import SqlQuery
 from etchdb.row import Row
 
@@ -19,6 +20,7 @@ __all__ = [
     "EtchdbError",
     "Inc",
     "IntegrityError",
+    "MigrationStatus",
     "Now",
     "OperationalError",
     "Row",

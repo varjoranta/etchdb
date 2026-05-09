@@ -18,8 +18,10 @@ from etchdb import sql
 
 if TYPE_CHECKING:
     from collections.abc import AsyncIterator, Mapping, Sequence
+    from pathlib import Path
 
     from etchdb.adapter import AdapterBase
+    from etchdb.migrations import MigrationStatus
     from etchdb.query import SqlQuery
     from etchdb.row import Row
 
@@ -302,3 +304,25 @@ class DB:
         don't have a DB instance.
         """
         return sql.compose(op, *args, placeholder=self._adapter.placeholder, **kwargs)
+
+    async def migrate(self, directory: str | Path) -> int:
+        """Apply every pending `.sql` file in `directory`. Returns the
+        count applied. See `etchdb.migrations` for the conventions
+        (filename ordering, transaction wrapping, drift / disappearance
+        rejection).
+        """
+        from etchdb.migrations import migrate as _migrate
+
+        return await _migrate(self, directory)
+
+    async def migration_status(self, directory: str | Path) -> MigrationStatus:
+        """Compare the migrations directory against the tracking table.
+
+        Creates the tracking table on first call (idempotent). Returns
+        a `MigrationStatus` listing pending / applied / drifted /
+        missing filenames; check `is_consistent` before relying on
+        the state.
+        """
+        from etchdb.migrations import status as _status
+
+        return await _status(self, directory)

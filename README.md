@@ -188,7 +188,25 @@ The design also targets AI-assisted development: predictable verbs, no metaclass
 
 ## Migrations
 
-Out of scope so far. A small forward-only, file-based migration helper (no autogenerate, no rollback, no DAG) is planned for a later release. etchdb owns no schema state today, so any external tool slots in fine in the meantime: Alembic if you also use SQLAlchemy, dbmate or sqitch if you don't, or a few `db.execute` calls in your bootstrap path.
+Forward-only, file-based, no autogenerate, no rollback. Drop `.sql` files into a directory; sort-order is apply-order:
+
+```
+migrations/
+  0001_create_users.sql
+  0002_add_email_index.sql
+  0003_add_articles.sql
+```
+
+```python
+n = await db.migrate("migrations/")           # apply every pending file
+status = await db.migration_status("migrations/")  # what's pending / applied / drifted / missing
+```
+
+Each migration runs in its own implicit transaction on Postgres. Don't write `BEGIN` / `COMMIT` / `ROLLBACK` in the file -- the runner owns transaction control and rejects files that try to take it back. For DDL that can't run inside a transaction (`CREATE INDEX CONCURRENTLY`), put `-- etchdb:no-transaction` on the first non-blank line. On SQLite multi-statement migrations run via `sqlite3.executescript`, which auto-commits any pending transaction (a sqlite3 stdlib behavior, unavoidable); treat each SQLite migration file as one logical unit.
+
+Tracking lives in a `_etchdb_migrations` table created lazily on first call, with `(filename, checksum, applied_at)`. The runner refuses to operate when state is inconsistent: an applied file whose content has changed (drift), or an applied filename no longer in the directory (disappearance). The error message names the recovery (`DELETE FROM _etchdb_migrations WHERE filename = ...` then re-run, or restore the missing file).
+
+`MigrationStatus` is a small frozen dataclass with `pending`, `applied`, `drifted`, `missing` filename lists and an `is_consistent` property. Other tools (Alembic, dbmate, sqitch) still slot in fine if you want autogenerate, branching, or rollback — etchdb's helper covers the simple forward-only case without dragging those in.
 
 ## Under consideration
 

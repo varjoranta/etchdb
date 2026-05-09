@@ -98,6 +98,15 @@ class AiosqliteAdapter(AdapterBase):
             await self._conn.commit()
             return cursor.rowcount
 
+    async def execute_script(self, sql: str) -> None:
+        # sqlite3.Connection.executescript auto-commits any pending
+        # transaction before running, so a multi-statement migration
+        # cannot be wrapped in an outer transaction. Documented in
+        # AdapterBase.execute_script and in the migration helper.
+        async with _wrap_errors():
+            await self._conn.executescript(sql)
+            await self._conn.commit()
+
     async def fetch(self, sql: str, *params: Any) -> list[dict[str, Any]]:
         async with _wrap_errors(), self._conn.execute(sql, params) as cursor:
             rows = await cursor.fetchall()
@@ -149,6 +158,11 @@ class _AiosqliteTxAdapter(AdapterBase):
     async def execute(self, sql: str, *params: Any) -> int:
         async with _wrap_errors(), self._conn.execute(sql, params) as cursor:
             return cursor.rowcount
+
+    async def execute_script(self, sql: str) -> None:
+        # See AiosqliteAdapter.execute_script for the transaction caveat.
+        async with _wrap_errors():
+            await self._conn.executescript(sql)
 
     async def fetch(self, sql: str, *params: Any) -> list[dict[str, Any]]:
         async with _wrap_errors(), self._conn.execute(sql, params) as cursor:
