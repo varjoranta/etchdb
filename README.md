@@ -83,6 +83,13 @@ async with db.transaction() as tx:
     await tx.insert(User(name="Carol"))
     await tx.execute("INSERT INTO audit_log (...) VALUES (...)")
 
+# Migrations: apply every pending .sql file in a directory, in
+# filename order. The runner creates a `_etchdb_migrations` tracking
+# table on first call. See the Migrations section below for the
+# transaction model, drift detection, and the no-transaction marker.
+applied = await db.migrate("migrations/")
+status = await db.migration_status("migrations/")  # MigrationStatus dataclass
+
 # Inspect SQL before executing (etchdb's defining feature)
 q = db.compose("get", User, id=1)
 print(q.sql)     # SELECT id, name, email FROM users WHERE id = $1
@@ -188,7 +195,7 @@ The design also targets AI-assisted development: predictable verbs, no metaclass
 
 ## Migrations
 
-Forward-only, file-based, no autogenerate, no rollback. Drop `.sql` files into a directory; sort-order is apply-order:
+Forward-only, file-based, no autogenerate, no rollback. Drop `.sql` files into a directory; sort-order is apply-order. Any sortable filename prefix works — zero-padded numbers, `YYYYMMDDHHMM` timestamps, whatever you like.
 
 ```
 migrations/
@@ -197,16 +204,70 @@ migrations/
   0003_add_articles.sql
 ```
 
-```python
-n = await db.migrate("migrations/")           # apply every pending file
-status = await db.migration_status("migrations/")  # what's pending / applied / drifted / missing
+A migration is plain SQL. Multiple statements separated by `;` are fine on Postgres:
+
+```sql
+-- migrations/0001_create_users.sql
+CREATE TABLE users (
+    id          SERIAL PRIMARY KEY,
+    name        TEXT NOT NULL,
+    email       TEXT UNIQUE,
+    created_at  TIMESTAMPTZ NOT NULL DEFAULT now()
+);
+
+CREATE INDEX users_email_idx ON users (email);
 ```
 
-Each migration runs in its own implicit transaction on Postgres. Don't write `BEGIN` / `COMMIT` / `ROLLBACK` in the file -- the runner owns transaction control and rejects files that try to take it back. For DDL that can't run inside a transaction (`CREATE INDEX CONCURRENTLY`), put `-- etchdb:no-transaction` on the first non-blank line. On SQLite multi-statement migrations run via `sqlite3.executescript`, which auto-commits any pending transaction (a sqlite3 stdlib behavior, unavoidable); treat each SQLite migration file as one logical unit.
+Apply pending migrations from your application bootstrap (or a one-shot script):
 
-Tracking lives in a `_etchdb_migrations` table created lazily on first call, with `(filename, checksum, applied_at)`. The runner refuses to operate when state is inconsistent: an applied file whose content has changed (drift), or an applied filename no longer in the directory (disappearance). The error message names the recovery (`DELETE FROM _etchdb_migrations WHERE filename = ...` then re-run, or restore the missing file).
+```python
+from etchdb import DB
 
-`MigrationStatus` is a small frozen dataclass with `pending`, `applied`, `drifted`, `missing` filename lists and an `is_consistent` property. Other tools (Alembic, dbmate, sqitch) still slot in fine if you want autogenerate, branching, or rollback — etchdb's helper covers the simple forward-only case without dragging those in.
+db = await DB.from_url("postgresql+asyncpg://user@host/db")
+applied = await db.migrate("migrations/")
+print(f"applied {applied} migrations")
+```
+
+Inspect state without applying:
+
+```python
+status = await db.migration_status("migrations/")
+# MigrationStatus(
+#     pending=["0003_add_articles.sql"],
+#     applied=["0001_create_users.sql", "0002_add_email_index.sql"],
+#     drifted=[],
+#     missing=[],
+# )
+if not status.is_consistent:
+    raise SystemExit(f"migration state inconsistent: drifted={status.drifted}, missing={status.missing}")
+```
+
+`MigrationStatus` is a small frozen dataclass exported from `etchdb`; `is_consistent` is `True` when both `drifted` and `missing` are empty.
+
+### Transaction model
+
+Each migration runs in its own implicit transaction on Postgres. Don't write `BEGIN` / `COMMIT` / `ROLLBACK` in the file — the runner owns transaction control and rejects files that try to take it back (with PL/pgSQL `DO $$ ... $$` blocks and string literals stripped first, so legitimate uses don't trip the check).
+
+For DDL that Postgres won't run inside a transaction (notably `CREATE INDEX CONCURRENTLY`), put `-- etchdb:no-transaction` on the first non-blank line:
+
+```sql
+-- migrations/0004_concurrent_index.sql
+-- etchdb:no-transaction
+CREATE INDEX CONCURRENTLY users_lower_email_idx ON users (lower(email));
+```
+
+On SQLite multi-statement migrations run via `sqlite3.executescript`, which auto-commits any pending transaction (a sqlite3 stdlib behavior, unavoidable); treat each SQLite migration file as one logical unit. Postgres is the canonical target.
+
+### Strict consistency
+
+Tracking lives in a `_etchdb_migrations` table created lazily on first call, with `(filename, checksum, applied_at)`. The checksum is sha256 of the file content. The runner refuses to operate when state is inconsistent:
+
+- **Drift**: an applied file's content has changed since it was applied. Editing a migration after it's been applied is silent state corruption; the runner refuses until you resolve it.
+- **Disappearance**: an applied filename is no longer in the directory. Renames count as both a disappearance and a new file.
+
+In both cases the error names the recovery (`DELETE FROM _etchdb_migrations WHERE filename = '...'` then re-run, or restore the missing file). Silent continuation with unknown state is exactly what a forward-only tool exists to prevent.
+
+Other migration tools (Alembic, dbmate, sqitch) still slot in fine if you want autogenerate, branching, or rollback — etchdb's helper covers the simple forward-only case without dragging those in.
 
 ## Under consideration
 
