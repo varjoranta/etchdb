@@ -1,30 +1,15 @@
 """Forward-only file-based migrations.
 
-A migration is a `.sql` file in a directory of your choosing, named so
-filenames sort in apply order (`0001_init.sql`, `0002_add_index.sql`,
-or any timestamp / numeric prefix you prefer). `db.migrate(directory)`
-applies every pending migration in sorted order; `db.migration_status`
-reports without applying.
+A migration is a `.sql` file in a directory of your choosing; the
+runner applies pending files in filename order, tracking applied
+ones in `_etchdb_migrations(filename, checksum, applied_at)` and
+refusing to operate on drift or disappearance.
 
-Each migration runs in its own implicit transaction on Postgres. Add
-`-- etchdb:no-transaction` as the first non-blank line of a file to opt
-out (required for `CREATE INDEX CONCURRENTLY` and other DDL that
-Postgres refuses to run inside a transaction). On SQLite multi-statement
-migrations run via `sqlite3.executescript`, which auto-commits any
-pending transaction; treat each SQLite migration file as one logical
-unit.
-
-Tracking lives in a `_etchdb_migrations` table with `(filename,
-checksum, applied_at)`. `applied_at` is a naive `TIMESTAMP` -- a
-timezone-less timestamp on Postgres, ISO-8601 text on SQLite -- and
-is audit-only; nothing in the runner reads it back. The runner
-refuses to operate when state is inconsistent: an applied file whose
-content has changed (drift), or an applied filename no longer in the
-directory (disappearance). The error message names the recovery
-command.
-
-`BEGIN`, `COMMIT`, and `ROLLBACK` inside migration files are rejected
-up front -- the runner owns transaction control.
+Public surface lives on DB: `db.migrate(directory)` and
+`db.migration_status(directory)`. Conventions (filename ordering,
+transaction model, the `-- etchdb:no-transaction` opt-out, SQLite's
+`executescript` caveat, recovery from inconsistent state) are in the
+README and the per-method docstrings.
 """
 
 from __future__ import annotations
