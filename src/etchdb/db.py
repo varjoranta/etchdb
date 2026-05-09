@@ -58,7 +58,13 @@ class DB:
         self._adapter = adapter
 
     @classmethod
-    async def from_url(cls, url: str) -> DB:
+    async def from_url(
+        cls,
+        url: str,
+        *,
+        min_size: int | None = None,
+        max_size: int | None = None,
+    ) -> DB:
         """Open a DB from a URL, dispatching on the URL scheme.
 
         Supported schemes:
@@ -68,8 +74,14 @@ class DB:
 
         Driver subpackages are imported lazily so users only need the
         driver they actually use installed.
+
+        `min_size` / `max_size` forward to the underlying Postgres pool
+        and are ignored on aiosqlite (no pool concept). For knobs
+        beyond size, construct the pool yourself and use the adapter's
+        `from_pool` directly.
         """
         scheme = urlparse(url).scheme.lower()
+        pool_kwargs = {"min_size": min_size, "max_size": max_size}
 
         if scheme in {"postgresql", "postgres", "postgresql+asyncpg"}:
             from etchdb.asyncpg import AsyncpgAdapter
@@ -77,16 +89,16 @@ class DB:
             # asyncpg only accepts the bare postgresql:// scheme.
             if scheme == "postgresql+asyncpg":
                 url = "postgresql://" + url.split("://", 1)[1]
-            adapter: AdapterBase = await AsyncpgAdapter.from_url(url)
+            adapter: AdapterBase = await AsyncpgAdapter.from_url(url, **pool_kwargs)
         elif scheme == "postgresql+psycopg":
             from etchdb.psycopg import PsycopgAdapter
 
             url = "postgresql://" + url.split("://", 1)[1]
-            adapter = await PsycopgAdapter.from_url(url)
+            adapter = await PsycopgAdapter.from_url(url, **pool_kwargs)
         elif scheme in {"sqlite", "sqlite+aiosqlite"}:
             from etchdb.aiosqlite import AiosqliteAdapter
 
-            adapter = await AiosqliteAdapter.from_url(url)
+            adapter = await AiosqliteAdapter.from_url(url, **pool_kwargs)
         else:
             raise ValueError(f"Unsupported URL scheme: {scheme!r}")
 

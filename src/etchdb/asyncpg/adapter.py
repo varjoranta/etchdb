@@ -82,9 +82,10 @@ class AsyncpgAdapter(AdapterBase):
     (etchdb will not close it), or `await from_url(url)` to let etchdb
     create and own the pool. The `owns_pool` flag tracks ownership.
 
-    For custom pool settings (init=, min_size=, max_size=, codecs),
+    `from_url` accepts `min_size` / `max_size`. For pool concerns
+    beyond size (custom `init=`, `statement_cache_size`, ENUM codecs),
     create the pool yourself with `asyncpg.create_pool(...)` and pass
-    it to `from_pool`. `from_url` is intentionally minimal.
+    it to `from_pool`.
     """
 
     def __init__(self, pool: asyncpg.Pool, *, owns_pool: bool = False):
@@ -101,16 +102,30 @@ class AsyncpgAdapter(AdapterBase):
         return cls(pool, owns_pool=False)
 
     @classmethod
-    async def from_url(cls, url: str) -> AsyncpgAdapter:
+    async def from_url(
+        cls,
+        url: str,
+        *,
+        min_size: int | None = None,
+        max_size: int | None = None,
+    ) -> AsyncpgAdapter:
         """Create an asyncpg pool from `url` and wrap it.
 
         etchdb owns the pool; `close()` will close it. The pool is
         initialised with a JSONB codec that handles UUID, datetime,
-        Enum, and Pydantic BaseModel transparently. Users wanting a
-        pristine pool with no codec setup should construct the pool
-        themselves and use `from_pool`.
+        Enum, and Pydantic BaseModel transparently.
+
+        `min_size` / `max_size` are forwarded to `asyncpg.create_pool`
+        if set. For pool concerns beyond size (asyncpg's
+        `statement_cache_size`, custom ENUM codecs, etc.), construct
+        the pool yourself and use `from_pool`.
         """
-        pool = await asyncpg.create_pool(url, init=_init_codecs)
+        pool_kwargs: dict[str, Any] = {"init": _init_codecs}
+        if min_size is not None:
+            pool_kwargs["min_size"] = min_size
+        if max_size is not None:
+            pool_kwargs["max_size"] = max_size
+        pool = await asyncpg.create_pool(url, **pool_kwargs)
         return cls(pool, owns_pool=True)
 
     async def execute(self, sql: str, *params: Any) -> int:

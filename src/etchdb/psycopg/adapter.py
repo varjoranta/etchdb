@@ -88,16 +88,30 @@ class PsycopgAdapter(AdapterBase):
         return cls(pool, owns_pool=False)
 
     @classmethod
-    async def from_url(cls, url: str) -> PsycopgAdapter:
+    async def from_url(
+        cls,
+        url: str,
+        *,
+        min_size: int | None = None,
+        max_size: int | None = None,
+    ) -> PsycopgAdapter:
         """Open a psycopg AsyncConnectionPool against `url` and wrap it.
 
         etchdb owns the pool; `close()` will close it. The pool is
         configured with a JSON encoder that handles UUID, datetime,
-        Enum, and Pydantic BaseModel transparently. Users wanting a
-        pristine pool with no codec setup should construct the pool
-        themselves and use `from_pool`.
+        Enum, and Pydantic BaseModel transparently.
+
+        `min_size` / `max_size` are forwarded to `AsyncConnectionPool`
+        if set. For pool concerns beyond size (psycopg's
+        `prepare_threshold`, custom dumpers, etc.), construct the
+        pool yourself and use `from_pool`.
         """
-        pool = AsyncConnectionPool(url, open=False, configure=_init_codecs)
+        pool_kwargs: dict[str, Any] = {"open": False, "configure": _init_codecs}
+        if min_size is not None:
+            pool_kwargs["min_size"] = min_size
+        if max_size is not None:
+            pool_kwargs["max_size"] = max_size
+        pool = AsyncConnectionPool(url, **pool_kwargs)
         await pool.open()
         return cls(pool, owns_pool=True)
 

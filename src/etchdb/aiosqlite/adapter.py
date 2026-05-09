@@ -80,10 +80,13 @@ class AiosqliteAdapter(AdapterBase):
         return cls(conn, owns_conn=False)
 
     @classmethod
-    async def from_url(cls, url: str) -> AiosqliteAdapter:
+    async def from_url(cls, url: str, **_pool_kwargs: object) -> AiosqliteAdapter:
         """Open an aiosqlite connection from `url` and wrap it.
 
-        etchdb owns the connection; `close()` will close it.
+        etchdb owns the connection; `close()` will close it. Pool
+        kwargs (`min_size`, `max_size`) are accepted for cross-driver
+        consistency with the Postgres adapters but ignored here --
+        aiosqlite wraps a single sqlite3 connection, not a pool.
         """
         path = _path_from_url(url)
         conn = await aiosqlite.connect(path)
