@@ -121,6 +121,59 @@ def test_insert_no_fields_uses_default_values_sqlite():
     assert q.params == []
 
 
+# --- __fields_not_in_db__: computed / transient fields ---------------
+
+
+class Note(Row):
+    """A row with a transient `display_label` field that exists on the
+    Pydantic model but is not a DB column."""
+
+    __table__ = "notes"
+    __fields_not_in_db__ = ("display_label",)
+    id: int
+    body: str
+    display_label: str = ""
+
+
+def test_insert_skips_fields_not_in_db():
+    """A field listed in __fields_not_in_db__ is dropped from the
+    INSERT column list and parameter binding even if it was set on
+    the row."""
+    note = Note(id=1, body="hi", display_label="formatted")
+    q = sql.insert(note, placeholder=pg)
+
+    assert q.sql == "INSERT INTO notes (id, body) VALUES ($1, $2) RETURNING *"
+    assert q.params == [1, "hi"]
+
+
+def test_select_columns_skip_fields_not_in_db():
+    """SELECT lists only columns that exist in the database."""
+    q = sql.select_one(Note, placeholder=pg, id=1)
+
+    assert q.sql == "SELECT id, body FROM notes WHERE id = $1 LIMIT 1"
+
+
+def test_update_set_skips_fields_not_in_db():
+    """An UPDATE doesn't try to write the transient field even when
+    it's in model_fields_set."""
+    note = Note(id=1, body="updated", display_label="anything")
+    q = sql.update(note, placeholder=pg)
+
+    assert q.sql == "UPDATE notes SET body = $1 WHERE id = $2"
+    assert q.params == ["updated", 1]
+
+
+def test_insert_many_skips_fields_not_in_db():
+    rows = [Note(id=1, body="a", display_label="x"), Note(id=2, body="b", display_label="y")]
+    q = sql.insert_many(rows, placeholder=pg)
+
+    assert q.sql == "INSERT INTO notes (id, body) VALUES ($1, $2), ($3, $4)"
+    assert q.params == [1, "a", 2, "b"]
+
+
+# --- on_conflict --------------------------------------------------------
+
+
 def test_insert_with_on_conflict_ignore_pg():
     user = User(id=1, name="Alice")
     q = sql.insert(user, placeholder=pg, on_conflict="ignore")

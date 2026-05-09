@@ -38,7 +38,7 @@ def insert(
     """
     cls = type(row)
     table = _table_name(row)
-    fields = [f for f in cls.model_fields if f in row.model_fields_set]
+    fields = [f for f in _db_fields(cls) if f in row.model_fields_set]
 
     if not fields:
         sql = f"INSERT INTO {table} DEFAULT VALUES"
@@ -85,7 +85,7 @@ def select_one(
         )
 
     table = _table_name(row_class)
-    columns = ", ".join(row_class.model_fields)
+    columns = ", ".join(_db_fields(row_class))
 
     where_sql, params = _where_clauses(filters, placeholder=placeholder)
     sql = f"SELECT {columns} FROM {table}"
@@ -115,7 +115,7 @@ def select_many(
     values to it.
     """
     table = _table_name(row_class)
-    columns = ", ".join(row_class.model_fields)
+    columns = ", ".join(_db_fields(row_class))
 
     where_sql, params = _where_clauses(filters, placeholder=placeholder)
 
@@ -165,9 +165,7 @@ def update(
     pk_set = set(row.__pk__)
     where_items = _pk_where_items(row, "update", where)
 
-    set_fields = [
-        f for f in type(row).model_fields if f in row.model_fields_set and f not in pk_set
-    ]
+    set_fields = [f for f in _db_fields(type(row)) if f in row.model_fields_set and f not in pk_set]
     if not set_fields:
         raise ValueError(f"{type(row).__name__} has no non-PK fields to update")
 
@@ -228,7 +226,7 @@ def insert_many(
     first = rows[0]
     first_cls = type(first)
     table = _table_name(first)
-    fields = [f for f in first_cls.model_fields if f in first.model_fields_set]
+    fields = [f for f in _db_fields(first_cls) if f in first.model_fields_set]
     if not fields:
         raise ValueError("insert_many requires at least one field set on the first row")
 
@@ -370,6 +368,17 @@ def _reject_exprs(op: str, fields: Sequence[str], values: Sequence[Any]) -> None
             f"Cannot {op} with column-expression sentinels (Inc / Now) on "
             f"{bad}. Use them with db.update on an existing row instead."
         )
+
+
+def _db_fields(model: type[Row]) -> list[str]:
+    """Field names from `model.model_fields` that map to DB columns.
+
+    Excludes anything listed in `__fields_not_in_db__` -- computed or
+    transient fields that exist on the Pydantic model but should not
+    be sent to or read from the database.
+    """
+    not_in_db = model.__fields_not_in_db__
+    return [f for f in model.model_fields if f not in not_in_db]
 
 
 def _on_conflict_clause(

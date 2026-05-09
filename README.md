@@ -99,6 +99,8 @@ q = sql.compose("get", User, id=1, placeholder=lambda i: f"${i + 1}")
 
 Use `Row.patch(**fields)` to build a partial Row that satisfies neither validation nor missing-required-field checks. It's the right shape when you want partial updates against a model with NOT NULL columns.
 
+Set `__fields_not_in_db__ = ("computed_label",)` on a Row class to carry computed or transient fields alongside DB-backed ones without etchdb sending them to or reading them from the database. The fields stay on the Pydantic model (validation, attribute access, type checking all work as normal); they're just dropped from INSERT, UPDATE, and SELECT column lists. Give such fields a default value -- read paths hydrate from the SELECT result, which never carries the column, so Pydantic uses the default.
+
 ## Typed errors
 
 Driver exceptions are mapped onto a small etchdb family so application code catches the same type regardless of the backend. The original driver exception is preserved as `__cause__`.
