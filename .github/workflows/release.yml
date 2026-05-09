@@ -46,6 +46,11 @@ jobs:
           # so it installs on every supported version; per-push CI (when
           # added) should cover the full 3.12 - 3.14 matrix.
           python-version: "3.13"
+          # The project does not commit `uv.lock` (library-style: consumers
+          # decide their lockfile). Without an explicit dependency glob the
+          # setup-uv cache silently never invalidates; pin it to
+          # pyproject.toml so the cache key tracks dependency changes.
+          cache-dependency-glob: "pyproject.toml"
 
       - name: Install dependencies
         run: uv sync --extra all --extra dev
