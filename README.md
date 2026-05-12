@@ -269,6 +269,25 @@ In both cases the error names the recovery (`DELETE FROM _etchdb_migrations WHER
 
 Other migration tools (Alembic, dbmate, sqitch) still slot in fine if you want autogenerate, branching, or rollback — etchdb's helper covers the simple forward-only case without dragging those in.
 
+### Running migrations from the command line
+
+Installing `etchdb` registers an `etchdb` console script for use in CI, deploy scripts, and Docker entrypoints — no Python bootstrap needed:
+
+```bash
+$ etchdb migrate ./migrations --url "$DATABASE_URL"
+applied 2 migrations
+
+$ etchdb status ./migrations --url "$DATABASE_URL"
+Migration status (./migrations):
+  applied (2):
+    0001_create_users.sql
+    0002_add_email_index.sql
+  pending (1):
+    0003_add_articles.sql
+```
+
+`--url` falls back to the `DATABASE_URL` environment variable. Exit codes: `0` on success, `1` on inconsistent state (drift or disappearance) -- so `etchdb status` is the natural gate before `etchdb migrate` in a deploy pipeline -- and `2` on usage errors (missing directory, no URL).
+
 ## Under consideration
 
 Comparison sentinels for `where=` filters (`Gt`, `Gte`, `Lt`, `Lte`, accepting either a scalar or the existing `Now()` sentinel) are on the table for a later release. Scope would stay narrow: single-column inequality only; compound predicates, `LIKE`, and `BETWEEN` would still go through raw SQL. Holding the API for more real use cases before committing. Until then, raw SQL via `db.fetch_models(User, "SELECT * FROM users WHERE expires_at > NOW()")` is the canonical answer; that's what etchdb's first-class raw-SQL escape valve is for.

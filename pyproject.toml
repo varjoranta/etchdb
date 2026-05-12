@@ -57,6 +57,9 @@ Homepage = "https://github.com/varjoranta/etchdb"
 Repository = "https://github.com/varjoranta/etchdb"
 Issues = "https://github.com/varjoranta/etchdb/issues"
 
+[project.scripts]
+etchdb = "etchdb.cli:main"
+
 [build-system]
 requires = ["hatchling"]
 build-backend = "hatchling.build"

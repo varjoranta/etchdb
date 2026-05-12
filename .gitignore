@@ -67,3 +67,4 @@ uv.lock
 scratch/
 TODO.local.md
 .local/
+.claude/
