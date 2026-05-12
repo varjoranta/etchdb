@@ -54,6 +54,11 @@ await db.insert_many([User(name=n) for n in names], on_conflict="ignore")
 await db.insert_many(rows, on_conflict="upsert")    # ON CONFLICT (pk) DO UPDATE SET ...
 await db.delete_many(User, [1, 2, 3])
 
+# Bulk update: same patch applied to all rows matching a filter.
+# Returns the affected-row count.
+n = await db.update_where(User.patch(status="archived"),
+                          where={"id": [1, 2, 3]})
+
 # Upsert via single insert: same rules, returns the DB's view.
 alice = await db.insert(User(id=1, name="Alice", email="a@x"),
                         on_conflict="upsert")

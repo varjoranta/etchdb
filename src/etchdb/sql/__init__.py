@@ -182,6 +182,49 @@ def update(
     return SqlQuery(sql=sql, params=set_values + where_values)
 
 
+def update_where(
+    row: Row,
+    *,
+    placeholder: Callable[[int], str],
+    where: Mapping[str, Any],
+) -> SqlQuery:
+    """Build a bulk UPDATE scoped entirely by `where=`.
+
+    Unlike `update`, the row's PK is not part of the WHERE clause; the
+    row is used only to supply the SET fields (everything in
+    `model_fields_set` except PK columns). `where=` must be non-empty
+    -- a missing WHERE would update every row, which is almost always
+    a bug; for that, use `db.execute` with raw SQL.
+
+    Returns the affected-row count from the underlying execute, not a
+    Row. The common shape is `update_where(User.patch(status="x"),
+    where={"id": [...]})` for "apply this patch to all matching rows".
+    """
+    if not where:
+        raise ValueError(
+            "update_where requires a non-empty `where=` mapping. "
+            "Bulk-updating every row in a table without a filter is "
+            "almost always a bug; use db.execute with raw SQL if you "
+            "really mean it."
+        )
+
+    table = _table_name(row)
+    pk_set = set(row.__pk__)
+    set_fields = [f for f in _db_fields(type(row)) if f in row.model_fields_set and f not in pk_set]
+    if not set_fields:
+        raise ValueError(
+            f"{type(row).__name__} has no non-PK fields to update; "
+            f"update_where needs at least one set field as the patch."
+        )
+
+    set_items = {f: getattr(row, f) for f in set_fields}
+    set_sql, set_values = _set_clauses(set_items, placeholder=placeholder)
+    where_sql, where_values = _where_clauses(where, placeholder=placeholder, start=len(set_values))
+
+    sql = f"UPDATE {table} SET {set_sql} WHERE {where_sql}"
+    return SqlQuery(sql=sql, params=set_values + where_values)
+
+
 def delete(
     row: Row,
     *,
@@ -313,12 +356,22 @@ _OPS = {
     "query": select_many,
     "insert": insert,
     "update": update,
+    "update_where": update_where,
     "delete": delete,
     "insert_many": insert_many,
     "delete_many": delete_many,
 }
 
-Op = Literal["get", "query", "insert", "update", "delete", "insert_many", "delete_many"]
+Op = Literal[
+    "get",
+    "query",
+    "insert",
+    "update",
+    "update_where",
+    "delete",
+    "insert_many",
+    "delete_many",
+]
 
 
 def compose(

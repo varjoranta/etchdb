@@ -745,6 +745,79 @@ def test_insert_many_with_now_raises():
         sql.insert_many([Article.patch(id=1, updated_at=Now())], placeholder=pg)
 
 
+# --- update_where: bulk update scoped by where= -------------------------
+
+
+def test_update_where_simple_pg():
+    """Patch is built from a partial Row (no PK); WHERE comes entirely
+    from the `where=` mapping."""
+    q = sql.update_where(
+        User.patch(name="archived"),
+        placeholder=pg,
+        where={"id": 1},
+    )
+    assert q.sql == "UPDATE users SET name = $1 WHERE id = $2"
+    assert q.params == ["archived", 1]
+
+
+def test_update_where_in_clause_pg():
+    """List values in `where=` produce IN clauses (the v0.4 IN feature
+    composes naturally with update_where)."""
+    q = sql.update_where(
+        User.patch(name="archived"),
+        placeholder=pg,
+        where={"id": [1, 2, 3]},
+    )
+    assert q.sql == "UPDATE users SET name = $1 WHERE id IN ($2, $3, $4)"
+    assert q.params == ["archived", 1, 2, 3]
+
+
+def test_update_where_is_null_filter_pg():
+    """None in `where=` emits IS NULL just like in `update(where=...)`."""
+    q = sql.update_where(
+        User.patch(name="cleaned"),
+        placeholder=pg,
+        where={"email": None},
+    )
+    assert q.sql == "UPDATE users SET name = $1 WHERE email IS NULL"
+    assert q.params == ["cleaned"]
+
+
+def test_update_where_sqlite():
+    q = sql.update_where(
+        User.patch(name="archived"),
+        placeholder=lite,
+        where={"id": [1, 2]},
+    )
+    assert q.sql == "UPDATE users SET name = ? WHERE id IN (?, ?)"
+    assert q.params == ["archived", 1, 2]
+
+
+def test_update_where_ignores_pk_field_in_patch():
+    """If the caller accidentally sets a PK column on the patch row,
+    update_where drops it from SET silently. Updating PK values in a
+    bulk update is almost always a bug and never the intent."""
+    q = sql.update_where(
+        User.patch(id=99, name="x"),  # id is in __pk__; gets dropped
+        placeholder=pg,
+        where={"email": "old@x"},
+    )
+    assert q.sql == "UPDATE users SET name = $1 WHERE email = $2"
+    assert q.params == ["x", "old@x"]
+
+
+def test_update_where_empty_where_raises():
+    """Bulk-updating without a filter would update every row; refuse."""
+    with pytest.raises(ValueError, match="non-empty"):
+        sql.update_where(User.patch(name="x"), placeholder=pg, where={})
+
+
+def test_update_where_no_set_fields_raises():
+    """A patch with only PK columns (or nothing) has nothing to set."""
+    with pytest.raises(ValueError, match="no non-PK fields"):
+        sql.update_where(User.patch(id=1), placeholder=pg, where={"status": "old"})
+
+
 # --- delete ----------------------------------------------------------
 
 

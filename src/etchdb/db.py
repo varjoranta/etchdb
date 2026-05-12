@@ -284,6 +284,26 @@ class DB:
         result = await self._adapter.fetchrow(q.sql, *q.params)
         return _hydrate(row, result)
 
+    async def update_where(self, row: Row, *, where: Mapping[str, Any]) -> int:
+        """Bulk-update rows scoped entirely by `where=`. Returns the
+        affected-row count.
+
+        The row's PK is not part of the WHERE clause; it supplies only
+        the SET fields. Common shape:
+
+            n = await db.update_where(
+                User.patch(status="archived"),
+                where={"id": [1, 2, 3]},
+            )
+
+        `where=` must be non-empty; for "update every row" use
+        `db.execute` with raw SQL. For single-row updates by PK, use
+        `db.update`."""
+        if _has_empty_collection_filter(where):
+            return 0
+        q = sql.update_where(row, placeholder=self._adapter.placeholder, where=where)
+        return await self._adapter.execute(q.sql, *q.params)
+
     async def delete(self, row: Row, *, where: Mapping[str, Any] | None = None) -> None:
         """Delete `row` by PK, AND'd with `where=`."""
         if _has_empty_collection_filter(where):
