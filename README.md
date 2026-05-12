@@ -64,9 +64,13 @@ alice = await db.insert(User(id=1, name="Alice", email="a@x"),
                         on_conflict="upsert")
 
 # Stream every matching row (paginated, won't load the whole table at once)
-# Uses offset pagination, so cost scales O(N**2) on huge tables; for those,
-# loop with a raw keyset query (WHERE id > last_id ORDER BY id LIMIT n).
+# iter_rows uses offset pagination, so cost scales O(N**2) on huge tables.
 async for user in db.iter_rows(User, batch_size=500):
+    process(user)
+
+# For huge tables, iter_rows_keyset stays O(N) by emitting
+# `WHERE <by> > <last_seen>` per page. `by` defaults to __pk__[0].
+async for user in db.iter_rows_keyset(User, batch_size=500):
     process(user)
 
 # Typed-result raw SQL (covers most joins)

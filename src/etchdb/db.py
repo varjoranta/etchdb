@@ -240,6 +240,88 @@ class DB:
                 return
             offset += batch_size
 
+    async def iter_rows_keyset(
+        self,
+        model: type[Row],
+        *,
+        by: str | None = None,
+        batch_size: int = 500,
+        **filters: Any,
+    ) -> AsyncIterator[Row]:
+        """Stream every matching row via keyset pagination.
+
+        Unlike `iter_rows`, the per-page cost stays constant -- each
+        page reads `batch_size` rows via `WHERE <by> > <last_seen>`
+        rather than `OFFSET N`, so total cost is O(N) instead of
+        O(N^2). The trade-off is the constraint on `by`:
+
+        - It must be a single column (composite-PK keyset uses
+          `(a, b) > (last_a, last_b)` and isn't supported here).
+        - It must be monotonic-ordered and unique enough that no two
+          rows tie. Primary keys usually qualify; created_at columns
+          can if the resolution is high enough.
+
+        Defaults to `model.__pk__[0]`. Filters are AND'd with the
+        cursor. Ordering is ascending; descending is not supported.
+        """
+        if batch_size < 1:
+            raise ValueError(f"batch_size must be >= 1, got {batch_size}")
+        if _has_empty_collection_filter(filters):
+            return
+        if by is None:
+            if len(model.__pk__) > 1:
+                raise ValueError(
+                    f"{model.__name__} has a composite primary key "
+                    f"{model.__pk__}; pass `by=<column>` explicitly. "
+                    f"Single-column keyset on a tied prefix can silently "
+                    f"duplicate or skip rows."
+                )
+            by = model.__pk__[0]
+        if by not in sql._db_fields(model):
+            raise ValueError(
+                f"keyset column {by!r} is not a DB column of "
+                f"{model.__name__} (or is marked __fields_not_in_db__); "
+                f"keyset pagination needs to read it back from each row."
+            )
+        if by in filters:
+            raise ValueError(
+                f"keyset column {by!r} cannot also appear in filters; "
+                f"the cursor already constrains that column."
+            )
+
+        ph = self._adapter.placeholder
+        columns = ", ".join(sql._db_fields(model))
+        table = model.__table__
+        last_seen: Any = None
+
+        while True:
+            params: list[Any] = []
+            where_parts: list[str] = []
+            if filters:
+                filter_sql, filter_values = sql._where_clauses(filters, placeholder=ph)
+                if filter_sql:
+                    where_parts.append(filter_sql)
+                params.extend(filter_values)
+            if last_seen is not None:
+                where_parts.append(f"{by} > {ph(len(params))}")
+                params.append(last_seen)
+
+            sql_str = f"SELECT {columns} FROM {table}"
+            if where_parts:
+                sql_str += f" WHERE {' AND '.join(where_parts)}"
+            sql_str += f" ORDER BY {by}"
+            params.append(batch_size)
+            sql_str += f" LIMIT {ph(len(params) - 1)}"
+
+            rows = await self._adapter.fetch(sql_str, *params)
+            if not rows:
+                return
+            for row in rows:
+                yield model(**row)
+            if len(rows) < batch_size:
+                return
+            last_seen = rows[-1][by]
+
     async def insert(self, row: Row, *, on_conflict: sql._OnConflict = None) -> Row:
         """Insert `row` and return the DB's view (RETURNING *).
 
