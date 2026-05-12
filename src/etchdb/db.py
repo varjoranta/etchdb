@@ -59,6 +59,22 @@ class DB:
     def __init__(self, adapter: AdapterBase):
         self._adapter = adapter
 
+    async def __aenter__(self) -> DB:
+        """Allow `async with db:` on an already-open DB instance.
+
+        Note: `async with DB.from_url(...) as db:` does NOT work --
+        `from_url` is a coroutine; you can't combine it with `async
+        with` in one expression. Open, then enter:
+
+            db = await DB.from_url(url)
+            async with db:
+                ...
+        """
+        return self
+
+    async def __aexit__(self, *_exc_info: object) -> None:
+        await self.close()
+
     @classmethod
     async def from_url(
         cls,
@@ -127,6 +143,17 @@ class DB:
 
     async def fetchval(self, sql: str, *params: Any) -> Any:
         return await self._adapter.fetchval(sql, *params)
+
+    async def ping(self) -> bool:
+        """Round-trip a `SELECT 1` to verify the connection is alive.
+
+        Returns `True` on success. Raises the usual etchdb exception
+        family (`OperationalError`, etc.) on failure -- the same
+        signal any other query would surface. Useful for liveness
+        probes in containers and health endpoints in web apps.
+        """
+        await self._adapter.fetchval("SELECT 1")
+        return True
 
     @asynccontextmanager
     async def transaction(self) -> AsyncIterator[DB]:

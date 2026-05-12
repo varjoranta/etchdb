@@ -88,6 +88,11 @@ async with db.transaction() as tx:
     await tx.insert(User(name="Carol"))
     await tx.execute("INSERT INTO audit_log (...) VALUES (...)")
 
+# Healthcheck + lifecycle
+ok = await db.ping()            # SELECT 1 round-trip; raises on failure
+async with db:                  # close on scope exit (DB must already be open)
+    ...
+
 # Migrations: apply every pending .sql file in a directory, in
 # filename order. The runner creates a `_etchdb_migrations` tracking
 # table on first call. See the Migrations section below for the
