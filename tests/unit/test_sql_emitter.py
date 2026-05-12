@@ -745,6 +745,50 @@ def test_insert_many_with_now_raises():
         sql.insert_many([Article.patch(id=1, updated_at=Now())], placeholder=pg)
 
 
+# --- select_keyset: single page of cursor-paginated SELECT ------------
+
+
+def test_select_keyset_first_page_omits_cursor_pg():
+    """First page (last_seen=None) drops the `by > ...` predicate and
+    relies on ORDER BY + LIMIT alone."""
+    q = sql.select_keyset(User, placeholder=pg, by="id", batch_size=3)
+    assert q.sql == "SELECT id, name, email FROM users ORDER BY id LIMIT $1"
+    assert q.params == [3]
+
+
+def test_select_keyset_subsequent_page_emits_cursor_pg():
+    """Once last_seen is set, the page's WHERE binds the previous max."""
+    q = sql.select_keyset(User, placeholder=pg, by="id", batch_size=3, last_seen=10)
+    assert q.sql == "SELECT id, name, email FROM users WHERE id > $1 ORDER BY id LIMIT $2"
+    assert q.params == [10, 3]
+
+
+def test_select_keyset_with_filter_pg():
+    """Filter predicates land before the cursor in the WHERE chain;
+    placeholder numbering threads through filter binds first."""
+    q = sql.select_keyset(User, placeholder=pg, by="id", batch_size=2, last_seen=5, name="alice")
+    assert q.sql == (
+        "SELECT id, name, email FROM users WHERE name = $1 AND id > $2 ORDER BY id LIMIT $3"
+    )
+    assert q.params == ["alice", 5, 2]
+
+
+def test_select_keyset_sqlite():
+    q = sql.select_keyset(User, placeholder=lite, by="id", batch_size=2, last_seen=5)
+    assert q.sql == "SELECT id, name, email FROM users WHERE id > ? ORDER BY id LIMIT ?"
+    assert q.params == [5, 2]
+
+
+def test_select_keyset_rejects_non_db_column():
+    with pytest.raises(ValueError, match="not a DB column"):
+        sql.select_keyset(User, placeholder=pg, by="nope", batch_size=1)
+
+
+def test_select_keyset_rejects_by_in_filters():
+    with pytest.raises(ValueError, match="cannot also appear in filters"):
+        sql.select_keyset(User, placeholder=pg, by="id", batch_size=1, id=5)
+
+
 # --- update_where: bulk update scoped by where= -------------------------
 
 

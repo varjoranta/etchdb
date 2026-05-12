@@ -140,6 +140,46 @@ def select_many(
     return SqlQuery(sql=sql, params=params)
 
 
+def select_keyset(
+    row_class: type[Row],
+    *,
+    placeholder: Callable[[int], str],
+    by: str,
+    batch_size: int,
+    last_seen: Any = None,
+    **filters: Any,
+) -> SqlQuery:
+    """Build a single page of a keyset-paginated SELECT.
+
+    Emits `SELECT cols FROM table [WHERE <filters> [AND by > last_seen]]
+    ORDER BY by LIMIT batch_size`. The first page passes
+    `last_seen=None`, which drops the cursor predicate; subsequent
+    pages bind the previous page's max value for `by`.
+    """
+    if by not in _db_fields(row_class):
+        raise ValueError(f"keyset column {by!r} is not a DB column on {row_class.__name__}.")
+    if by in filters:
+        raise ValueError(f"keyset column {by!r} cannot also appear in filters.")
+
+    table = _table_name(row_class)
+    columns = ", ".join(_db_fields(row_class))
+    where_sql, params = _where_clauses(filters, placeholder=placeholder)
+    where_parts = [where_sql] if where_sql else []
+
+    if last_seen is not None:
+        where_parts.append(f"{by} > {placeholder(len(params))}")
+        params.append(last_seen)
+
+    sql = f"SELECT {columns} FROM {table}"
+    if where_parts:
+        sql += f" WHERE {' AND '.join(where_parts)}"
+    sql += f" ORDER BY {by}"
+    params.append(batch_size)
+    sql += f" LIMIT {placeholder(len(params) - 1)}"
+
+    return SqlQuery(sql=sql, params=params)
+
+
 def update(
     row: Row,
     *,
@@ -354,6 +394,7 @@ def delete_many(
 _OPS = {
     "get": select_one,
     "query": select_many,
+    "select_keyset": select_keyset,
     "insert": insert,
     "update": update,
     "update_where": update_where,
@@ -365,6 +406,7 @@ _OPS = {
 Op = Literal[
     "get",
     "query",
+    "select_keyset",
     "insert",
     "update",
     "update_where",

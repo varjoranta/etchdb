@@ -95,10 +95,9 @@ def main(argv: list[str] | None = None) -> int:
         )
         return 2
 
+    runner = {"migrate": _run_migrate, "status": _run_status}[args.cmd]
     try:
-        if args.cmd == "migrate":
-            return asyncio.run(_run_migrate(url, args.directory))
-        return asyncio.run(_run_status(url, args.directory))
+        return asyncio.run(runner(url, args.directory))
     except RuntimeError as e:
         # Migration inconsistency (drift / disappearance) from db.migrate.
         print(f"error: {e}", file=sys.stderr)

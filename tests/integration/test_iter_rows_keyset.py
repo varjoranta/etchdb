@@ -78,7 +78,7 @@ async def test_iter_rows_keyset_composite_pk_requires_explicit_by(db: DB):
     point the user at the explicit `by=` form."""
     from tests._models import UserRole
 
-    with pytest.raises(ValueError, match="composite primary key"):
+    with pytest.raises(ValueError, match="composite PK"):
         async for _ in db.iter_rows_keyset(UserRole):
             pass
 

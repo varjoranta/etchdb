@@ -60,15 +60,10 @@ class DB:
         self._adapter = adapter
 
     async def __aenter__(self) -> DB:
-        """Allow `async with db:` on an already-open DB instance.
+        """Enable `async with db:` on an already-open DB; closes on exit.
 
-        Note: `async with DB.from_url(...) as db:` does NOT work --
-        `from_url` is a coroutine; you can't combine it with `async
-        with` in one expression. Open, then enter:
-
-            db = await DB.from_url(url)
-            async with db:
-                ...
+        `async with DB.from_url(...) as db:` does not work -- `from_url`
+        is a coroutine. Open first, then enter the block.
         """
         return self
 
@@ -147,12 +142,15 @@ class DB:
     async def ping(self) -> bool:
         """Round-trip a `SELECT 1` to verify the connection is alive.
 
-        Returns `True` on success. Raises the usual etchdb exception
-        family (`OperationalError`, etc.) on failure -- the same
-        signal any other query would surface. Useful for liveness
-        probes in containers and health endpoints in web apps.
+        Returns `True` on success, `False` on any failure (closed pool,
+        network error, etc.). Useful for liveness probes and health
+        endpoints. If you want the underlying exception (e.g. for
+        diagnostics), call `fetchval('SELECT 1')` directly.
         """
-        await self._adapter.fetchval("SELECT 1")
+        try:
+            await self._adapter.fetchval("SELECT 1")
+        except Exception:  # noqa: BLE001  healthcheck: any failure -> False
+            return False
         return True
 
     @asynccontextmanager
@@ -271,49 +269,22 @@ class DB:
         if by is None:
             if len(model.__pk__) > 1:
                 raise ValueError(
-                    f"{model.__name__} has a composite primary key "
-                    f"{model.__pk__}; pass `by=<column>` explicitly. "
-                    f"Single-column keyset on a tied prefix can silently "
-                    f"duplicate or skip rows."
+                    f"{model.__name__} has composite PK {model.__pk__}; "
+                    f"pass `by=<column>` explicitly."
                 )
             by = model.__pk__[0]
-        if by not in sql._db_fields(model):
-            raise ValueError(
-                f"keyset column {by!r} is not a DB column of "
-                f"{model.__name__} (or is marked __fields_not_in_db__); "
-                f"keyset pagination needs to read it back from each row."
-            )
-        if by in filters:
-            raise ValueError(
-                f"keyset column {by!r} cannot also appear in filters; "
-                f"the cursor already constrains that column."
-            )
 
-        ph = self._adapter.placeholder
-        columns = ", ".join(sql._db_fields(model))
-        table = model.__table__
         last_seen: Any = None
-
         while True:
-            params: list[Any] = []
-            where_parts: list[str] = []
-            if filters:
-                filter_sql, filter_values = sql._where_clauses(filters, placeholder=ph)
-                if filter_sql:
-                    where_parts.append(filter_sql)
-                params.extend(filter_values)
-            if last_seen is not None:
-                where_parts.append(f"{by} > {ph(len(params))}")
-                params.append(last_seen)
-
-            sql_str = f"SELECT {columns} FROM {table}"
-            if where_parts:
-                sql_str += f" WHERE {' AND '.join(where_parts)}"
-            sql_str += f" ORDER BY {by}"
-            params.append(batch_size)
-            sql_str += f" LIMIT {ph(len(params) - 1)}"
-
-            rows = await self._adapter.fetch(sql_str, *params)
+            q = sql.select_keyset(
+                model,
+                placeholder=self._adapter.placeholder,
+                by=by,
+                batch_size=batch_size,
+                last_seen=last_seen,
+                **filters,
+            )
+            rows = await self._adapter.fetch(q.sql, *q.params)
             if not rows:
                 return
             for row in rows:
