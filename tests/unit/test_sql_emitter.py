@@ -748,35 +748,98 @@ def test_insert_many_with_now_raises():
 # --- select_keyset: single page of cursor-paginated SELECT ------------
 
 
-def test_select_keyset_first_page_omits_cursor_pg():
-    """First page (last_seen=None) drops the `by > ...` predicate and
-    relies on ORDER BY + LIMIT alone."""
+def test_select_keyset_first_page_emits_nulls_first_pg():
+    """First page drops the cursor predicate and emits explicit
+    NULLS FIRST so iteration order is deterministic across backends."""
     q = sql.select_keyset(User, placeholder=pg, by="id", batch_size=3)
-    assert q.sql == "SELECT id, name, email FROM users ORDER BY id LIMIT $1"
+    assert q.sql == "SELECT id, name, email FROM users ORDER BY id NULLS FIRST LIMIT $1"
     assert q.params == [3]
 
 
-def test_select_keyset_subsequent_page_emits_cursor_pg():
-    """Once last_seen is set, the page's WHERE binds the previous max."""
-    q = sql.select_keyset(User, placeholder=pg, by="id", batch_size=3, last_seen=10)
-    assert q.sql == "SELECT id, name, email FROM users WHERE id > $1 ORDER BY id LIMIT $2"
+def test_select_keyset_by_pk_emits_scalar_cursor_pg():
+    """Single-column cursor (by IS pk) degenerates to the scalar form
+    `id > $1`, not one-element row-value syntax."""
+    q = sql.select_keyset(User, placeholder=pg, by="id", batch_size=3, last_seen=[10])
+    assert q.sql == (
+        "SELECT id, name, email FROM users WHERE id > $1 ORDER BY id NULLS FIRST LIMIT $2"
+    )
     assert q.params == [10, 3]
 
 
-def test_select_keyset_with_filter_pg():
-    """Filter predicates land before the cursor in the WHERE chain;
-    placeholder numbering threads through filter binds first."""
-    q = sql.select_keyset(User, placeholder=pg, by="id", batch_size=2, last_seen=5, name="alice")
+def test_select_keyset_by_non_pk_emits_compound_cursor_pg():
+    """`by` differs from pk: cursor is `(by, pk_tail)` row-value, and
+    ORDER BY chains the PK tail after `by`."""
+    q = sql.select_keyset(User, placeholder=pg, by="email", batch_size=3, last_seen=["a@x", 10])
     assert q.sql == (
-        "SELECT id, name, email FROM users WHERE name = $1 AND id > $2 ORDER BY id LIMIT $3"
+        "SELECT id, name, email FROM users WHERE (email, id) > ($1, $2) "
+        "ORDER BY email NULLS FIRST, id LIMIT $3"
+    )
+    assert q.params == ["a@x", 10, 3]
+
+
+def test_select_keyset_null_region_cursor_pg():
+    """`last_seen[0] IS NULL`: emit OR-group that either advances through
+    more NULL-by rows via PK tail or unlocks the non-NULL tail."""
+    q = sql.select_keyset(User, placeholder=pg, by="email", batch_size=3, last_seen=[None, 7])
+    assert q.sql == (
+        "SELECT id, name, email FROM users "
+        "WHERE ((email IS NULL AND id > $1) OR email IS NOT NULL) "
+        "ORDER BY email NULLS FIRST, id LIMIT $2"
+    )
+    assert q.params == [7, 3]
+
+
+def test_select_keyset_composite_pk_emits_three_col_cursor_pg():
+    """Composite PK with non-PK `by`: cursor extends through both PK
+    columns so ties resolve through the full unique key."""
+    q = sql.select_keyset(
+        UserRole, placeholder=pg, by="note", batch_size=2, last_seen=["x", 1, 10]
+    )
+    assert q.sql == (
+        "SELECT user_id, role_id, note FROM user_roles "
+        "WHERE (note, user_id, role_id) > ($1, $2, $3) "
+        "ORDER BY note NULLS FIRST, user_id, role_id LIMIT $4"
+    )
+    assert q.params == ["x", 1, 10, 2]
+
+
+def test_select_keyset_composite_pk_null_region_pg():
+    """Composite PK + null region: OR-group's PK side is itself a
+    row-value `(user_id, role_id) > ($1, $2)`."""
+    q = sql.select_keyset(
+        UserRole, placeholder=pg, by="note", batch_size=2, last_seen=[None, 1, 10]
+    )
+    assert q.sql == (
+        "SELECT user_id, role_id, note FROM user_roles "
+        "WHERE ((note IS NULL AND (user_id, role_id) > ($1, $2)) OR note IS NOT NULL) "
+        "ORDER BY note NULLS FIRST, user_id, role_id LIMIT $3"
+    )
+    assert q.params == [1, 10, 2]
+
+
+def test_select_keyset_filter_with_cursor_parenthesizes_or_pg():
+    """Filters AND'd with the cursor: the OR-group must be parenthesized
+    so AND/OR precedence does not break the predicate. Placeholders
+    thread through filter binds first."""
+    q = sql.select_keyset(
+        User, placeholder=pg, by="email", batch_size=2, last_seen=[None, 5], name="alice"
+    )
+    assert q.sql == (
+        "SELECT id, name, email FROM users "
+        "WHERE name = $1 AND ((email IS NULL AND id > $2) OR email IS NOT NULL) "
+        "ORDER BY email NULLS FIRST, id LIMIT $3"
     )
     assert q.params == ["alice", 5, 2]
 
 
-def test_select_keyset_sqlite():
-    q = sql.select_keyset(User, placeholder=lite, by="id", batch_size=2, last_seen=5)
-    assert q.sql == "SELECT id, name, email FROM users WHERE id > ? ORDER BY id LIMIT ?"
-    assert q.params == [5, 2]
+def test_select_keyset_sqlite_placeholders():
+    """SQLite uses `?` placeholders; emitter is otherwise identical."""
+    q = sql.select_keyset(User, placeholder=lite, by="email", batch_size=2, last_seen=["a@x", 5])
+    assert q.sql == (
+        "SELECT id, name, email FROM users WHERE (email, id) > (?, ?) "
+        "ORDER BY email NULLS FIRST, id LIMIT ?"
+    )
+    assert q.params == ["a@x", 5, 2]
 
 
 def test_select_keyset_rejects_non_db_column():
@@ -787,6 +850,13 @@ def test_select_keyset_rejects_non_db_column():
 def test_select_keyset_rejects_by_in_filters():
     with pytest.raises(ValueError, match="cannot also appear in filters"):
         sql.select_keyset(User, placeholder=pg, by="id", batch_size=1, id=5)
+
+
+def test_select_keyset_rejects_last_seen_length_mismatch():
+    """`last_seen` must have one value per cursor column; a mismatch is
+    a caller bug, caught at emit time rather than at SQL execute time."""
+    with pytest.raises(ValueError, match="last_seen has"):
+        sql.select_keyset(User, placeholder=pg, by="email", batch_size=1, last_seen=["only-one"])
 
 
 # --- update_where: bulk update scoped by where= -------------------------
