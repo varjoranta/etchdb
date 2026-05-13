@@ -13,7 +13,7 @@ from etchdb.migrations import MigrationStatus
 from etchdb.query import SqlQuery
 from etchdb.row import Row
 
-__version__ = "0.6.0"
+__version__ = "0.6.1"
 
 __all__ = [
     "DB",
