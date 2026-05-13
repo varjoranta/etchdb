@@ -91,3 +91,20 @@ async def test_iter_rows_keyset_rejects_non_db_column(db: DB):
     with pytest.raises(ValueError, match="not a DB column"):
         async for _ in db.iter_rows_keyset(User, by="nonexistent_col"):
             pass
+
+
+async def test_iter_rows_keyset_raises_on_null_page_boundary(db: DB):
+    """NULL at a full-page boundary stalls the cursor (WHERE by >
+    NULL is false), so the loop would re-fetch the same page forever.
+    Raise instead. Three NULL emails + one non-NULL + batch_size=2
+    reproduces on both SQLite (NULLs first) and Postgres (NULLs
+    last), since either way a NULL row lands at the end of a full
+    non-final page."""
+    await db.insert(User(id=1, name="u1", email=None))
+    await db.insert(User(id=2, name="u2", email=None))
+    await db.insert(User(id=3, name="u3", email=None))
+    await db.insert(User(id=4, name="u4", email="a@x"))
+
+    with pytest.raises(ValueError, match="NULL at the page boundary"):
+        async for _ in db.iter_rows_keyset(User, by="email", batch_size=2):
+            pass

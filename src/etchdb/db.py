@@ -255,9 +255,11 @@ class DB:
 
         - It must be a single column (composite-PK keyset uses
           `(a, b) > (last_a, last_b)` and isn't supported here).
-        - It must be monotonic-ordered and unique enough that no two
-          rows tie. Primary keys usually qualify; created_at columns
-          can if the resolution is high enough.
+        - It must be NOT NULL and unique enough that no two rows
+          tie. Primary keys usually qualify; created_at columns can
+          if the resolution is high enough. A NULL at a page
+          boundary stalls the cursor (WHERE by > NULL is false),
+          so we raise rather than loop forever.
 
         Defaults to `model.__pk__[0]`. Filters are AND'd with the
         cursor. Ordering is ascending; descending is not supported.
@@ -287,6 +289,12 @@ class DB:
             rows = await self._adapter.fetch(q.sql, *q.params)
             if not rows:
                 return
+            if len(rows) == batch_size and rows[-1][by] is None:
+                raise ValueError(
+                    f"iter_rows_keyset: {by!r} is NULL at the page boundary; "
+                    f"the cursor cannot advance. Pick a non-nullable column "
+                    f"for `by`, or filter NULLs out via raw SQL."
+                )
             for row in rows:
                 yield model(**row)
             if len(rows) < batch_size:
