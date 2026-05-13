@@ -146,38 +146,103 @@ def select_keyset(
     placeholder: Callable[[int], str],
     by: str,
     batch_size: int,
-    last_seen: Any = None,
+    last_seen: Sequence[Any] | None = None,
     **filters: Any,
 ) -> SqlQuery:
     """Build a single page of a keyset-paginated SELECT.
 
-    Emits `SELECT cols FROM table [WHERE <filters> [AND by > last_seen]]
-    ORDER BY by LIMIT batch_size`. The first page passes
-    `last_seen=None`, which drops the cursor predicate; subsequent
-    pages bind the previous page's max value for `by`.
+    Cursor columns are `[by] + [p for p in __pk__ if p != by]`, so the
+    cursor is unique (PK tail breaks ties). `last_seen` is a sequence
+    aligned with those columns; `None` drops the cursor predicate
+    (first page). `ORDER BY ... NULLS FIRST` is explicit so NULL rows
+    iterate first on every backend (Postgres default would be NULLS
+    LAST otherwise; SQLite already defaults NULLS FIRST). SQLite 3.30+
+    is required.
+
+    Three WHERE shapes, branched on `last_seen` state:
+      first page  -- no cursor predicate
+      NULL region -- (by IS NULL AND <pk_cursor>) OR by IS NOT NULL
+      past NULL   -- (by, *pk_tail) > (last_by, *last_pk_tail)
+
+    Single-column cursor (1 PK col and by == that col) degenerates to
+    the scalar form `by > $k` so we never emit one-element row-value
+    syntax. The OR-group is fully parenthesized inside the AND chain
+    so filters and the cursor compose correctly.
     """
-    if by not in _db_fields(row_class):
-        raise ValueError(f"keyset column {by!r} is not a DB column on {row_class.__name__}.")
     if by in filters:
         raise ValueError(f"keyset column {by!r} cannot also appear in filters.")
 
+    db_fields = _db_fields(row_class)
+    order_cols = [by] + [p for p in row_class.__pk__ if p != by]
+    for col in order_cols:
+        if col not in db_fields:
+            raise ValueError(
+                f"keyset column {col!r} is not a DB column on {row_class.__name__}."
+            )
+
     table = _table_name(row_class)
-    columns = ", ".join(_db_fields(row_class))
+    columns = ", ".join(db_fields)
     where_sql, params = _where_clauses(filters, placeholder=placeholder)
     where_parts = [where_sql] if where_sql else []
 
     if last_seen is not None:
-        where_parts.append(f"{by} > {placeholder(len(params))}")
-        params.append(last_seen)
+        if len(last_seen) != len(order_cols):
+            raise ValueError(
+                f"last_seen has {len(last_seen)} values but cursor has "
+                f"{len(order_cols)} columns ({order_cols})."
+            )
+        cursor_sql, cursor_values = _keyset_cursor_sql(
+            order_cols, last_seen, placeholder, start=len(params)
+        )
+        where_parts.append(cursor_sql)
+        params.extend(cursor_values)
 
     sql = f"SELECT {columns} FROM {table}"
     if where_parts:
         sql += f" WHERE {' AND '.join(where_parts)}"
-    sql += f" ORDER BY {by}"
+    order_by = ", ".join([f"{order_cols[0]} NULLS FIRST", *order_cols[1:]])
+    sql += f" ORDER BY {order_by}"
     params.append(batch_size)
     sql += f" LIMIT {placeholder(len(params) - 1)}"
 
     return SqlQuery(sql=sql, params=params)
+
+
+def _keyset_cursor_sql(
+    order_cols: list[str],
+    last_seen: Sequence[Any],
+    placeholder: Callable[[int], str],
+    *,
+    start: int,
+) -> tuple[str, list[Any]]:
+    """Emit the WHERE cursor predicate. Returns `(sql, bound_values)`.
+
+    `start` is the offset for placeholder numbering -- `start + i` is
+    the param index for value `i`, so the caller controls placement in
+    its own params list.
+    """
+    by = order_cols[0]
+
+    def _gt(cols: list[str], values: Sequence[Any], offset: int) -> str:
+        lhs = ", ".join(cols)
+        rhs = ", ".join(placeholder(offset + i) for i in range(len(values)))
+        if len(cols) == 1:
+            return f"{lhs} > {rhs}"
+        return f"({lhs}) > ({rhs})"
+
+    if last_seen[0] is None:
+        pk_tail = order_cols[1:]
+        if not pk_tail:
+            raise ValueError(
+                f"keyset cursor has NULL in {by!r} but no PK tie-breaker "
+                f"is available (single-PK case where by IS pk)."
+            )
+        values = list(last_seen[1:])
+        pk_cursor = _gt(pk_tail, values, start)
+        return f"(({by} IS NULL AND {pk_cursor}) OR {by} IS NOT NULL)", values
+
+    values = list(last_seen)
+    return _gt(order_cols, values, start), values
 
 
 def update(

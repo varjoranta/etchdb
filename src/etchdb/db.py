@@ -248,21 +248,18 @@ class DB:
     ) -> AsyncIterator[Row]:
         """Stream every matching row via keyset pagination.
 
-        Unlike `iter_rows`, the per-page cost stays constant -- each
-        page reads `batch_size` rows via `WHERE <by> > <last_seen>`
+        Unlike `iter_rows`, per-page cost stays constant: each page
+        reads `batch_size` rows via `WHERE (by, *pk_tail) > (...)`
         rather than `OFFSET N`, so total cost is O(N) instead of
-        O(N^2). The trade-off is the constraint on `by`:
+        O(N^2). `by` must be a single DB-orderable column. PK columns
+        break ties on `by` and let the cursor paginate through NULL
+        values; the cursor is `[by] + [p for p in __pk__ if p != by]`.
 
-        - It must be a single column (composite-PK keyset uses
-          `(a, b) > (last_a, last_b)` and isn't supported here).
-        - It must be NOT NULL and unique enough that no two rows
-          tie. Primary keys usually qualify; created_at columns can
-          if the resolution is high enough. A NULL at a page
-          boundary stalls the cursor (WHERE by > NULL is false),
-          so we raise rather than loop forever.
-
-        Defaults to `model.__pk__[0]`. Filters are AND'd with the
-        cursor. Ordering is ascending; descending is not supported.
+        `by` defaults to `model.__pk__[0]` (composite PK requires
+        explicit `by=`). Filters are AND'd with the cursor. Ordering
+        is ascending with `NULLS FIRST` -- NULL rows iterate first
+        on every backend. Descending is not supported. SQLite 3.30+
+        is required (for the `NULLS FIRST` keyword).
         """
         if batch_size < 1:
             raise ValueError(f"batch_size must be >= 1, got {batch_size}")
@@ -276,7 +273,8 @@ class DB:
                 )
             by = model.__pk__[0]
 
-        last_seen: Any = None
+        order_cols = [by] + [p for p in model.__pk__ if p != by]
+        last_seen: list[Any] | None = None
         while True:
             q = sql.select_keyset(
                 model,
@@ -289,17 +287,11 @@ class DB:
             rows = await self._adapter.fetch(q.sql, *q.params)
             if not rows:
                 return
-            if len(rows) == batch_size and rows[-1][by] is None:
-                raise ValueError(
-                    f"iter_rows_keyset: {by!r} is NULL at the page boundary; "
-                    f"the cursor cannot advance. Pick a non-nullable column "
-                    f"for `by`, or filter NULLs out via raw SQL."
-                )
             for row in rows:
                 yield model(**row)
             if len(rows) < batch_size:
                 return
-            last_seen = rows[-1][by]
+            last_seen = [rows[-1][c] for c in order_cols]
 
     async def insert(self, row: Row, *, on_conflict: sql._OnConflict = None) -> Row:
         """Insert `row` and return the DB's view (RETURNING *).

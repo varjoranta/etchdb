@@ -68,8 +68,11 @@ alice = await db.insert(User(id=1, name="Alice", email="a@x"),
 async for user in db.iter_rows(User, batch_size=500):
     process(user)
 
-# For huge tables, iter_rows_keyset stays O(N) by emitting
-# `WHERE <by> > <last_seen>` per page. `by` defaults to __pk__[0].
+# For huge tables, iter_rows_keyset stays O(N) by emitting a
+# `(by, *pk_tail) > last_seen` cursor per page. PK tail breaks
+# ties and lets the cursor paginate through NULL values. Order
+# is `ORDER BY by NULLS FIRST` -- deterministic across backends.
+# `by` defaults to __pk__[0]. SQLite 3.30+ required.
 async for user in db.iter_rows_keyset(User, batch_size=500):
     process(user)
 
