@@ -1,0 +1,76 @@
+name: CI
+
+# Runs on every push to main and every pull request. Three jobs:
+#   - lint: ruff on src + tests (single Python)
+#   - unit: pytest tests/unit across the full supported Python matrix
+#   - integration: pytest tests/integration across the matrix, with a
+#     Postgres 16 service container. SQLite always runs; the two
+#     Postgres adapters point at the service via ETCHDB_TEST_POSTGRES_DSN.
+
+on:
+  push:
+    branches: [main]
+  pull_request:
+
+concurrency:
+  group: ci-${{ github.ref }}
+  cancel-in-progress: true
+
+jobs:
+  lint:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+      - uses: astral-sh/setup-uv@v5
+        with:
+          python-version: "3.14"
+          cache-dependency-glob: "pyproject.toml"
+      - run: uv sync --extra dev
+      - run: uv run ruff check src/etchdb tests
+
+  unit:
+    runs-on: ubuntu-latest
+    strategy:
+      fail-fast: false
+      matrix:
+        python-version: ["3.12", "3.13", "3.14"]
+    steps:
+      - uses: actions/checkout@v4
+      - uses: astral-sh/setup-uv@v5
+        with:
+          python-version: ${{ matrix.python-version }}
+          cache-dependency-glob: "pyproject.toml"
+      - run: uv sync --extra all --extra dev
+      - run: uv run pytest tests/unit -q
+
+  integration:
+    runs-on: ubuntu-latest
+    strategy:
+      fail-fast: false
+      matrix:
+        python-version: ["3.12", "3.13", "3.14"]
+    services:
+      postgres:
+        image: postgres:16
+        env:
+          POSTGRES_USER: etchdb
+          POSTGRES_PASSWORD: etchdb-test-password
+          POSTGRES_DB: etchdb_test
+        ports:
+          # conftest probes localhost:5532 (matches local `make db-up`);
+          # expose the service on the same port so no env override is
+          # needed and the Postgres skip-guard sees the service.
+          - 5532:5432
+        options: >-
+          --health-cmd pg_isready
+          --health-interval 10s
+          --health-timeout 5s
+          --health-retries 5
+    steps:
+      - uses: actions/checkout@v4
+      - uses: astral-sh/setup-uv@v5
+        with:
+          python-version: ${{ matrix.python-version }}
+          cache-dependency-glob: "pyproject.toml"
+      - run: uv sync --extra all --extra dev
+      - run: uv run pytest tests/integration -q
