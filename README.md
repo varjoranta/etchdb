@@ -1,10 +1,74 @@
 # etchdb
 
-Minimal async DB layer for Python. Typed CRUD over Pydantic. Raw SQL when you need it.
+Typed Pydantic rows for the boring database work. Raw SQL for everything else.
+
+etchdb is a small async database layer for Python applications that want:
+
+- typed CRUD without ORM magic
+- raw SQL as the escape hatch, not a second-class API
+- inspectable generated SQL before execution
+- asyncpg, psycopg3, and SQLite behind one small facade
+
+It is for people who like SQL but are tired of rewriting the same Pydantic bridge in every project.
 
 ## Status
 
-Alpha. v0.6.0 on PyPI. Built in public from day one; expect tightening between alpha releases.
+Alpha. On PyPI. Built in public from day one; expect tightening between alpha releases.
+
+## First look
+
+```python
+from etchdb import DB, Row
+
+class User(Row):
+    __table__ = "users"
+    id: int | None = None
+    name: str
+    email: str | None = None
+
+db = await DB.from_url("postgresql+asyncpg://user@host/db")
+
+alice = await db.insert(User(name="Alice"))   # id populated from RETURNING *
+user = await db.get(User, id=alice.id)        # User | None
+users = await db.query(User, email=None)      # IS NULL, not = NULL
+
+users = await db.fetch_models(User, """
+    SELECT u.*
+    FROM users u
+    JOIN orders o ON o.user_id = u.id
+    WHERE o.created_at > $1
+""", since)
+
+q = db.compose("get", User, id=alice.id)
+print(q.sql)     # SELECT id, name, email FROM users WHERE id = $1
+print(q.params)  # [1]
+```
+
+## Why etchdb?
+
+Most Python ORMs become awkward exactly when the database gets interesting: pgvector, PostGIS, CTEs, window functions, custom SQL functions, partial indexes, or hand-tuned joins.
+
+Raw asyncpg is excellent, but then every service grows the same glue: map rows into models, build simple CRUD safely, handle transactions, and keep generated SQL visible for debugging.
+
+etchdb sits between those worlds: simple typed operations for simple cases, raw SQL for real queries, and no framework takeover.
+
+The design also targets AI-assisted development: predictable verbs, no metaclass magic, no implicit context vars, no lazy loading, every typed operation produces inspectable SQL. Code assistants can generate and review it because the library has a small surface area and the database behavior stays visible.
+
+## What etchdb is
+
+- a typed CRUD layer over Pydantic models
+- a raw SQL passthrough with typed result helpers
+- a small driver facade for asyncpg, psycopg3, and aiosqlite
+- a way to inspect generated SQL before executing it
+- a forward-only SQL migration helper
+
+## What etchdb is not
+
+- not a full ORM
+- not a relationship or lazy-loading framework
+- not a query builder for complex joins
+- not a schema autogenerator
+- not a replacement for knowing SQL
 
 ## Example
 
@@ -188,27 +252,6 @@ db = DB(AsyncpgAdapter.from_pool(pool))
 ```
 
 Both Postgres adapters take libpq-native `$1, $2, ...` placeholders in raw SQL. The psycopg adapter uses `AsyncRawCursor` so the `$N` form works there too; psycopg's default `%s` form is not used and will produce a Postgres syntax error.
-
-## Why
-
-Most Python ORMs are heavy, opinionated, and leak at the seams when you reach for pgvector or PostGIS. Raw asyncpg works, but every project ends up writing the same Pydantic-bridge code. etchdb closes that gap without becoming a framework.
-
-The design also targets AI-assisted development: predictable verbs, no metaclass magic, no implicit context vars, no lazy loading, every typed operation produces inspectable SQL. Code an LLM can write correctly on the first attempt.
-
-## Goals
-
-- Driver-agnostic (asyncpg or psycopg3, swap freely)
-- Multi-dialect (Postgres primary, SQLite secondary, MySQL maybe)
-- Async native, no sync wrappers
-- Typed CRUD via Pydantic; raw SQL as first-class escape valve
-- Inspectable SQL: every typed op exposes its `(sql, params)` without executing
-
-## Non-goals
-
-- Query builder beyond simple CRUD (use raw SQL for joins)
-- Implicit relationships, lazy loading, eager loading
-- Sync support
-- A second canonical way to do anything
 
 ## Migrations
 
