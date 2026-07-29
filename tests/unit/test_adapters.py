@@ -5,10 +5,15 @@ driver-specific placeholder format and that the driver subpackages
 fail loudly when their backing driver is unavailable.
 """
 
+import inspect
+
+import asyncpg
+
+from etchdb import errors
 from etchdb.adapter import AdapterBase
 from etchdb.aiosqlite import AiosqliteAdapter
 from etchdb.asyncpg import AsyncpgAdapter
-from etchdb.asyncpg.adapter import _rowcount_from_status
+from etchdb.asyncpg.adapter import _POOL_STATE_MSGS, _map_exception, _rowcount_from_status
 from etchdb.psycopg import PsycopgAdapter
 
 
@@ -63,3 +68,40 @@ def test_asyncpg_rowcount_from_status_select_returns_minus_one():
     assert _rowcount_from_status("SELECT 1") == -1
     assert _rowcount_from_status("SELECT 0") == -1
     assert _rowcount_from_status("COPY 5") == -1
+
+
+def test_asyncpg_closed_pool_maps_to_operational_error_with_guidance():
+    """A stale adapter is the likeliest cause of a closed-pool error, and
+    the raw asyncpg traceback names neither etchdb nor that cause.
+
+    from_pool() captures the pool object, so an adapter cached across a
+    close/recreate cycle keeps serving the dead pool. Callers hit this in
+    test teardown and on reconnect, and the bare InterfaceError sends them
+    reading asyncpg internals instead of their own caching.
+    """
+    mapped = _map_exception(asyncpg.exceptions.InterfaceError("pool is closed"))
+    assert isinstance(mapped, errors.OperationalError)
+    assert "pool is closed" in str(mapped)
+    assert "from_pool()" in str(mapped)
+
+    mapped = _map_exception(asyncpg.exceptions.InterfaceError("pool is not initialized"))
+    assert isinstance(mapped, errors.OperationalError)
+
+
+def test_asyncpg_other_interface_errors_still_propagate():
+    """Only the two pool-state messages are remapped. InterfaceError also
+    covers unrelated misuse (released connections, prepared-statement
+    errors) that must not be relabelled as a stale-adapter problem."""
+    assert _map_exception(asyncpg.exceptions.InterfaceError("cannot perform operation")) is None
+
+
+def test_asyncpg_pool_state_messages_still_match_asyncpg():
+    """Pins the literal strings this mapping depends on.
+
+    _POOL_STATE_MSGS matches Pool._check_init's messages exactly. If an
+    asyncpg upgrade rewords them, the mapping would silently stop firing
+    and the unhelpful traceback would come back. Fail here instead.
+    """
+    src = inspect.getsource(asyncpg.pool.Pool._check_init)
+    for msg in _POOL_STATE_MSGS:
+        assert msg in src, f"asyncpg no longer raises {msg!r} — update _POOL_STATE_MSGS"

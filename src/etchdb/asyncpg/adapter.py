@@ -29,6 +29,15 @@ async def _init_codecs(conn: asyncpg.Connection) -> None:
     )
 
 
+# Exact strings from asyncpg's Pool._check_init. Matched literally rather
+# than by substring so an asyncpg reword fails the pinning test loudly
+# instead of silently reverting to an unhelpful bare traceback. The third
+# _check_init message ("pool is being initialized, but not yet ready") is
+# deliberately absent: that one is a startup race, not a stale adapter, and
+# wants different advice.
+_POOL_STATE_MSGS = frozenset({"pool is closed", "pool is not initialized"})
+
+
 def _map_exception(exc: BaseException) -> errors.EtchdbError | None:
     """Translate an asyncpg exception to its etchdb equivalent, or
     None if the exception should propagate unchanged."""
@@ -46,6 +55,17 @@ def _map_exception(exc: BaseException) -> errors.EtchdbError | None:
         | ConnectionError,
     ):
         return errors.OperationalError(str(exc))
+    if isinstance(exc, asyncpg.exceptions.InterfaceError) and str(exc) in _POOL_STATE_MSGS:
+        # Pool._check_init raises these when the wrapped pool is closed or
+        # was never opened. Unmapped, it surfaces as a bare asyncpg traceback
+        # ending inside pool.py that names neither etchdb nor the actual
+        # cause: a caller holding an adapter built from a pool since replaced.
+        return errors.OperationalError(
+            f"{exc} — from_pool() holds the pool object you passed it. If the "
+            "pool gets closed and recreated (app restart, test teardown, "
+            "reconnect), build a new adapter from the new pool; the old "
+            "adapter keeps the dead one."
+        )
     return None
 
 
