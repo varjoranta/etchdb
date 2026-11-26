@@ -45,7 +45,7 @@ lint:
 	uv run ruff format --check .
 
 typecheck:
-	uv run ty check src
+	uv run ty check src tests/typing
 
 fix:
 	uv run ruff format .

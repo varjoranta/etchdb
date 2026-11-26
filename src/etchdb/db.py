@@ -35,7 +35,7 @@ def _has_empty_collection_filter(filters: Mapping[str, Any] | None) -> bool:
     return any(isinstance(v, list | tuple) and not v for v in filters.values())
 
 
-def _hydrate(model_or_row: type[Row] | Row, row: dict[str, Any] | None) -> Row | None:
+def _hydrate[R: Row](model_or_row: type[R] | R, row: dict[str, Any] | None) -> R | None:
     """Build a Row from a fetchrow result, or return None when there is no row.
 
     Centralises the dict-to-Row construction and the None-handling that
@@ -172,29 +172,29 @@ class DB:
     async def close(self) -> None:
         await self._adapter.close()
 
-    async def fetch_models(self, model: type[Row], sql: str, *params: Any) -> list[Row]:
+    async def fetch_models[R: Row](self, model: type[R], sql: str, *params: Any) -> list[R]:
         rows = await self._adapter.fetch(sql, *params)
         return [model(**r) for r in rows]
 
-    async def fetch_model(self, model: type[Row], sql: str, *params: Any) -> Row | None:
+    async def fetch_model[R: Row](self, model: type[R], sql: str, *params: Any) -> R | None:
         row = await self._adapter.fetchrow(sql, *params)
         return _hydrate(model, row)
 
-    async def get(self, model: type[Row], **filters: Any) -> Row | None:
+    async def get[R: Row](self, model: type[R], **filters: Any) -> R | None:
         if _has_empty_collection_filter(filters):
             return None
         q = sql.select_one(model, placeholder=self._adapter.placeholder, **filters)
         return await self.fetch_model(model, q.sql, *q.params)
 
-    async def query(
+    async def query[R: Row](
         self,
-        model: type[Row],
+        model: type[R],
         *,
         limit: int | None = None,
         offset: int | None = None,
         order_by: str | list[str] | None = None,
         **filters: Any,
-    ) -> list[Row]:
+    ) -> list[R]:
         if _has_empty_collection_filter(filters):
             return []
         q = sql.select_many(
@@ -207,14 +207,14 @@ class DB:
         )
         return await self.fetch_models(model, q.sql, *q.params)
 
-    async def iter_rows(
+    async def iter_rows[R: Row](
         self,
-        model: type[Row],
+        model: type[R],
         *,
         batch_size: int = 500,
         order_by: str | list[str] | None = None,
         **filters: Any,
-    ) -> AsyncIterator[Row]:
+    ) -> AsyncIterator[R]:
         """Stream every matching row, paged by `batch_size`. Default
         `order_by` is `__pk__` so pagination stays stable across pages.
 
@@ -244,14 +244,14 @@ class DB:
                 return
             offset += batch_size
 
-    async def iter_rows_keyset(
+    async def iter_rows_keyset[R: Row](
         self,
-        model: type[Row],
+        model: type[R],
         *,
         by: str | None = None,
         batch_size: int = 500,
         **filters: Any,
-    ) -> AsyncIterator[Row]:
+    ) -> AsyncIterator[R]:
         """Stream every matching row via keyset pagination.
 
         Unlike `iter_rows`, per-page cost stays constant: each page
@@ -299,7 +299,7 @@ class DB:
                 return
             last_seen = [rows[-1][c] for c in order_cols]
 
-    async def insert(self, row: Row, *, on_conflict: sql._OnConflict = None) -> Row:
+    async def insert[R: Row](self, row: R, *, on_conflict: sql._OnConflict = None) -> R:
         """Insert `row` and return the DB's view (RETURNING *).
 
         `on_conflict="ignore"` appends `ON CONFLICT DO NOTHING`; if a
@@ -373,7 +373,7 @@ class DB:
                 q = sql.delete_many(model, chunk, placeholder=adapter.placeholder)
                 await adapter.execute(q.sql, *q.params)
 
-    async def update(self, row: Row, *, where: Mapping[str, Any] | None = None) -> Row | None:
+    async def update[R: Row](self, row: R, *, where: Mapping[str, Any] | None = None) -> R | None:
         """Update `row` by PK, AND'd with `where=`. Returns the updated
         row, or None if PK + `where=` matched no row."""
         if _has_empty_collection_filter(where):
