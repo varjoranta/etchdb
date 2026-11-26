@@ -167,6 +167,9 @@ class PsycopgAdapter(AdapterBase):
                     await cur.execute(cast(Any, sql))
             finally:
                 if not was_autocommit:
+                    # A script that opened a transaction of its own would
+                    # make the switch back fail; end it first.
+                    await conn.rollback()
                     await conn.set_autocommit(False)
 
     async def fetch(self, sql: str, *params: Any) -> list[dict[str, Any]]:
