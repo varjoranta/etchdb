@@ -382,7 +382,7 @@ For DDL that Postgres won't run inside a transaction (notably `CREATE INDEX CONC
 CREATE INDEX CONCURRENTLY users_lower_email_idx ON users (lower(email));
 ```
 
-On SQLite multi-statement migrations run via `sqlite3.executescript`, which auto-commits any pending transaction (a sqlite3 stdlib behavior, unavoidable); treat each SQLite migration file as one logical unit. Postgres is the canonical target.
+On SQLite a migration runs through `sqlite3.executescript` inside the same kind of transaction: a file that fails part-way is rolled back together with its tracking row, so fixing the file and re-running applies it cleanly. That holds for connections etchdb opens (`DB.from_url`, the CLI). A connection you open yourself and wrap with `AiosqliteAdapter.from_connection` is in sqlite3's legacy transaction mode unless you pass `autocommit=True` to `aiosqlite.connect`, and in that mode `executescript` commits before it runs, so a failed file can leave its earlier statements applied.
 
 ### Strict consistency
 

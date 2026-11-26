@@ -43,8 +43,10 @@ class AdapterBase(ABC):
         Used by the migration runner for files that may contain
         multiple statements separated by `;`. asyncpg / psycopg accept
         multi-statement SQL through the regular execute path;
-        aiosqlite wraps `sqlite3.executescript`, which auto-commits
-        any pending transaction (a sqlite3 stdlib behavior).
+        aiosqlite wraps `sqlite3.executescript`, which stays inside
+        the surrounding transaction on a connection opened with
+        `autocommit=True` (every `from_url` connection) and commits
+        first on one in sqlite3's legacy transaction mode.
         """
         ...
 

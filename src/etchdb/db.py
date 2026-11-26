@@ -119,7 +119,7 @@ class DB:
                 raise ValueError("configure is only supported by the Postgres adapters")
             from etchdb.aiosqlite import AiosqliteAdapter
 
-            adapter = await AiosqliteAdapter.from_url(url, **pool_kwargs)
+            adapter = await AiosqliteAdapter.from_url(url, min_size=min_size, max_size=max_size)
         else:
             raise ValueError(f"Unsupported URL scheme: {scheme!r}")
 
