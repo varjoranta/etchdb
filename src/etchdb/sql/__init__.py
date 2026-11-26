@@ -6,6 +6,7 @@ own `placeholder` callable so the same emitter works for both Postgres
 ($1, $2, ...) and SQLite (?, ?, ...).
 """
 
+import re
 from collections.abc import Callable, Mapping, Sequence
 from typing import Any, Literal
 
@@ -14,6 +15,11 @@ from etchdb.query import SqlQuery
 from etchdb.row import Row
 
 _OnConflict = Literal["ignore", "upsert"] | None
+
+# Filter and `where=` keys are interpolated into the statement as column
+# names, so they are held to a plain identifier. Anything richer belongs
+# in raw SQL.
+_IDENTIFIER_RE = re.compile(r"[A-Za-z_][A-Za-z_0-9]*\Z")
 
 
 def insert(
@@ -112,7 +118,8 @@ def select_many(
     `= $N`. `limit`, `offset`, and `order_by` are keyword-only.
     `limit` and `offset` are bound as parameters; `order_by` is
     interpolated as a raw SQL fragment, so do not pass user-controlled
-    values to it.
+    values to it. Filter names must be plain column identifiers and
+    raise ValueError otherwise.
     """
     table = _table_name(row_class)
     columns = ", ".join(_db_fields(row_class))
@@ -134,6 +141,11 @@ def select_many(
         n = int(offset)
         if n < 0:
             raise ValueError(f"offset must be >= 0, got {n}")
+        if limit is None and placeholder(0) == "?":
+            # SQLite has no OFFSET without LIMIT; -1 is its "no limit".
+            # The `?` placeholder is how this driver-free emitter can
+            # tell: Postgres rejects a negative LIMIT.
+            sql += " LIMIT -1"
         params.append(n)
         sql += f" OFFSET {placeholder(len(params) - 1)}"
 
@@ -154,10 +166,13 @@ def select_keyset(
     Cursor columns are `[by] + [p for p in __pk__ if p != by]`, so the
     cursor is unique (PK tail breaks ties). `last_seen` is a sequence
     aligned with those columns; `None` drops the cursor predicate
-    (first page). `ORDER BY ... NULLS FIRST` is explicit so NULL rows
-    iterate first on every backend (Postgres default would be NULLS
-    LAST otherwise; SQLite already defaults NULLS FIRST). SQLite 3.30+
-    is required.
+    (first page). When `by` is not a primary-key column, `ORDER BY ...
+    NULLS FIRST` is explicit so NULL rows iterate first on every
+    backend (Postgres default would be NULLS LAST otherwise; SQLite
+    already defaults NULLS FIRST), which needs SQLite 3.30+. A
+    primary-key `by` holds no NULLs, and there the keyword is left
+    out: Postgres cannot use the primary-key index for a NULLS FIRST
+    ordering and would sort the whole table for every page.
 
     Three WHERE shapes, branched on `last_seen` state:
       first page  -- no cursor predicate
@@ -198,7 +213,8 @@ def select_keyset(
     sql = f"SELECT {columns} FROM {table}"
     if where_parts:
         sql += f" WHERE {' AND '.join(where_parts)}"
-    order_by = ", ".join([f"{order_cols[0]} NULLS FIRST", *order_cols[1:]])
+    nulls = "" if by in row_class.__pk__ else " NULLS FIRST"
+    order_by = ", ".join([f"{order_cols[0]}{nulls}", *order_cols[1:]])
     sql += f" ORDER BY {order_by}"
     params.append(batch_size)
     sql += f" LIMIT {placeholder(len(params) - 1)}"
@@ -366,28 +382,9 @@ def insert_many(
     The DB facade chunks long batches at the driver's parameter limit
     before calling this. This emitter builds one query per chunk.
     """
-    if not rows:
-        raise ValueError("insert_many requires at least one row")
-
-    first = rows[0]
-    first_cls = type(first)
-    table = _table_name(first)
-    fields = [f for f in _db_fields(first_cls) if f in first.model_fields_set]
-    if not fields:
-        raise ValueError("insert_many requires at least one field set on the first row")
-
-    expected = first.model_fields_set
-    for i, row in enumerate(rows):
-        if type(row) is not first_cls:
-            raise ValueError(
-                f"insert_many: all rows must be the same Row subclass; "
-                f"row[0] is {first_cls.__name__}, row[{i}] is {type(row).__name__}."
-            )
-        if row.model_fields_set != expected:
-            raise ValueError(
-                f"insert_many: all rows must share model_fields_set; "
-                f"row[0] has {sorted(expected)}, row[{i}] has {sorted(row.model_fields_set)}."
-            )
+    fields = insert_many_fields(rows)
+    first_cls = type(rows[0])
+    table = _table_name(first_cls)
 
     columns = ", ".join(fields)
     n = len(fields)
@@ -405,6 +402,39 @@ def insert_many(
     sql += _on_conflict_clause(first_cls, fields, on_conflict)
 
     return SqlQuery(sql=sql, params=params)
+
+
+def insert_many_fields(rows: Sequence[Row]) -> list[str]:
+    """Validate `rows` for a multi-VALUES INSERT and return the columns
+    it emits: every row the same Row subclass with the same
+    `model_fields_set`.
+
+    The DB facade calls this on the whole batch before it sends the
+    first chunk, so a row that does not belong is rejected before
+    anything is written rather than when its chunk comes up.
+    """
+    if not rows:
+        raise ValueError("insert_many requires at least one row")
+
+    first = rows[0]
+    first_cls = type(first)
+    fields = [f for f in _db_fields(first_cls) if f in first.model_fields_set]
+    if not fields:
+        raise ValueError("insert_many requires at least one field set on the first row")
+
+    expected = first.model_fields_set
+    for i, row in enumerate(rows):
+        if type(row) is not first_cls:
+            raise ValueError(
+                f"insert_many: all rows must be the same Row subclass; "
+                f"row[0] is {first_cls.__name__}, row[{i}] is {type(row).__name__}."
+            )
+        if row.model_fields_set != expected:
+            raise ValueError(
+                f"insert_many: all rows must share model_fields_set; "
+                f"row[0] has {sorted(expected)}, row[{i}] has {sorted(row.model_fields_set)}."
+            )
+    return fields
 
 
 def delete_many(
@@ -646,7 +676,9 @@ def _where_clauses(
     start: int = 0,
 ) -> tuple[str, list[Any]]:
     """Build a WHERE-clause body. None becomes `IS NULL`; list/tuple
-    becomes `IN (...)`; everything else becomes `field = $N`.
+    becomes `IN (...)`; everything else becomes `field = $N`. Keys
+    must be plain identifiers: they are the one part of a typed query
+    that reaches the statement unbound.
 
     Returns `(sql_body, values)`. `IS NULL` keys consume no
     placeholder, so `values` may be shorter than `items`. `start` is
@@ -657,6 +689,12 @@ def _where_clauses(
     parts: list[str] = []
     values: list[Any] = []
     for field, value in items.items():
+        if not _IDENTIFIER_RE.match(field):
+            raise ValueError(
+                f"filter name {field!r} is not a plain column identifier. Filter "
+                f"names go into the statement as written, so only letters, digits "
+                f"and underscores are accepted; use raw SQL for anything else."
+            )
         if value is None:
             parts.append(f"{field} IS NULL")
         elif isinstance(value, list | tuple):

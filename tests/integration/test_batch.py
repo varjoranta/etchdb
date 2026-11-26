@@ -143,3 +143,41 @@ async def test_delete_many_chunks_large_batches(db: DB, monkeypatch):
     await db.delete_many(User, [1, 2, 3, 4, 5])
 
     assert await db.query(User) == []
+
+
+# --- a multi-chunk batch is one unit ----------------------------------
+
+
+async def test_insert_many_rolls_back_earlier_chunks_on_failure(db: DB, monkeypatch):
+    """Two columns per row and a limit of 4 gives chunks of 2. The
+    duplicate sits in the second chunk; the first must not survive it."""
+    monkeypatch.setattr(db_module, "_PARAM_LIMIT", 4)
+    rows = [User(id=1, name="a"), User(id=2, name="b"), User(id=3, name="c"), User(id=3, name="d")]
+    with pytest.raises(IntegrityError):
+        await db.insert_many(rows)
+    assert await db.query(User) == []
+
+
+async def test_insert_many_rejects_a_foreign_row_before_writing(db: DB, monkeypatch):
+    """A row of another model at the start of a later chunk used to
+    pass that chunk's own check and be written to its own table."""
+    monkeypatch.setattr(db_module, "_PARAM_LIMIT", 4)
+    rows = [User(id=1, name="a"), User(id=2, name="b"), UserRole(user_id=1, role_id=1)]
+    with pytest.raises(ValueError, match="same Row subclass"):
+        await db.insert_many(rows)
+    assert await db.query(User) == []
+    assert await db.query(UserRole) == []
+
+
+async def test_delete_many_rolls_back_earlier_chunks_on_failure(db: DB, monkeypatch):
+    monkeypatch.setattr(db_module, "_PARAM_LIMIT", 2)
+    await db.insert_many([User(id=i, name=f"u{i}") for i in range(1, 5)])
+    with pytest.raises(Exception):  # noqa: B017  driver-specific bind error
+        await db.delete_many(User, [1, 2, 3, object()])
+    assert len(await db.query(User)) == 4
+
+
+async def test_query_offset_without_limit(db: DB):
+    await db.insert_many([User(id=i, name=f"u{i}") for i in range(1, 4)])
+    rows = await db.query(User, offset=1, order_by="id")
+    assert [u.id for u in rows] == [2, 3]

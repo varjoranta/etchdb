@@ -49,5 +49,15 @@ class Row(BaseModel):
         """Build a partial Row for `db.update` / `db.delete`, skipping
         Pydantic validation so partials with missing required fields
         work. NOT a general-purpose constructor: use `Cls(...)` for
-        fully-formed rows that should be validated."""
+        fully-formed rows that should be validated.
+
+        Names that are not fields of the model raise ValueError.
+        Without validation nothing else would catch a misspelt one,
+        and the emitter would leave it out of the statement."""
+        unknown = sorted(fields.keys() - cls.model_fields.keys())
+        if unknown:
+            raise ValueError(
+                f"{cls.__name__}.patch() got unknown field(s) {unknown}; "
+                f"declared fields are {list(cls.model_fields)}."
+            )
         return cls.model_construct(**fields)

@@ -748,11 +748,20 @@ def test_insert_many_with_now_raises():
 # --- select_keyset: single page of cursor-paginated SELECT ------------
 
 
-def test_select_keyset_first_page_emits_nulls_first_pg():
-    """First page drops the cursor predicate and emits explicit
-    NULLS FIRST so iteration order is deterministic across backends."""
+def test_select_keyset_first_page_by_pk_pg():
+    """First page drops the cursor predicate. A primary-key `by` holds
+    no NULLs, so there is no NULLS FIRST: with it Postgres could not
+    walk the primary-key index and would sort the table for each page."""
     q = sql.select_keyset(User, placeholder=pg, by="id", batch_size=3)
-    assert q.sql == "SELECT id, name, email FROM users ORDER BY id NULLS FIRST LIMIT $1"
+    assert q.sql == "SELECT id, name, email FROM users ORDER BY id LIMIT $1"
+    assert q.params == [3]
+
+
+def test_select_keyset_first_page_by_non_pk_emits_nulls_first_pg():
+    """A nullable `by` gets an explicit NULLS FIRST so iteration order
+    is the same on every backend."""
+    q = sql.select_keyset(User, placeholder=pg, by="email", batch_size=3)
+    assert q.sql == "SELECT id, name, email FROM users ORDER BY email NULLS FIRST, id LIMIT $1"
     assert q.params == [3]
 
 
@@ -760,9 +769,7 @@ def test_select_keyset_by_pk_emits_scalar_cursor_pg():
     """Single-column cursor (by IS pk) degenerates to the scalar form
     `id > $1`, not one-element row-value syntax."""
     q = sql.select_keyset(User, placeholder=pg, by="id", batch_size=3, last_seen=[10])
-    assert q.sql == (
-        "SELECT id, name, email FROM users WHERE id > $1 ORDER BY id NULLS FIRST LIMIT $2"
-    )
+    assert q.sql == "SELECT id, name, email FROM users WHERE id > $1 ORDER BY id LIMIT $2"
     assert q.params == [10, 3]
 
 
@@ -1228,3 +1235,54 @@ def test_sql_compose_delete_many():
 
     assert q.sql == "DELETE FROM users WHERE id IN ($1, $2, $3)"
     assert q.params == [1, 2, 3]
+
+
+# --- filter names are identifiers ------------------------------------
+
+
+@pytest.mark.parametrize(
+    "name", ["id = id OR 1", "name; DROP TABLE users", "u.id", "", "1x", "a b"]
+)
+def test_filter_names_must_be_plain_identifiers(name):
+    with pytest.raises(ValueError, match="plain column identifier"):
+        sql.select_many(User, placeholder=pg, **{name: 1})
+    with pytest.raises(ValueError, match="plain column identifier"):
+        sql.select_one(User, placeholder=pg, **{name: 1})
+    with pytest.raises(ValueError, match="plain column identifier"):
+        sql.select_keyset(User, placeholder=pg, by="id", batch_size=1, **{name: 1})
+    with pytest.raises(ValueError, match="plain column identifier"):
+        sql.update(User(id=1, name="x"), placeholder=pg, where={name: 1})
+    with pytest.raises(ValueError, match="plain column identifier"):
+        sql.update_where(User.patch(name="x"), placeholder=pg, where={name: 1})
+    with pytest.raises(ValueError, match="plain column identifier"):
+        sql.delete(User(id=1, name="x"), placeholder=pg, where={name: 1})
+
+
+def test_filter_on_a_column_the_model_does_not_declare_is_allowed():
+    """A Row may declare a subset of the table; filtering on one of the
+    other columns stays possible."""
+    q = sql.select_many(User, placeholder=pg, tenant_id=7)
+    assert q.sql == "SELECT id, name, email FROM users WHERE tenant_id = $1"
+
+
+# --- offset without limit --------------------------------------------
+
+
+def test_offset_without_limit_pg():
+    q = sql.select_many(User, placeholder=pg, offset=5)
+    assert q.sql == "SELECT id, name, email FROM users OFFSET $1"
+    assert q.params == [5]
+
+
+def test_offset_without_limit_sqlite_emits_unbounded_limit():
+    q = sql.select_many(User, placeholder=lambda i: "?", offset=5)
+    assert q.sql == "SELECT id, name, email FROM users LIMIT -1 OFFSET ?"
+    assert q.params == [5]
+
+
+# --- patch -----------------------------------------------------------
+
+
+def test_patch_rejects_unknown_field():
+    with pytest.raises(ValueError, match=r"unknown field\(s\) \['emial'\]"):
+        User.patch(id=1, emial="a@x")

@@ -10,21 +10,17 @@ an adapter, or via the URL-scheme dispatcher `DB.from_url`.
 
 from __future__ import annotations
 
+from collections.abc import AsyncIterator, Awaitable, Callable, Mapping, Sequence
 from contextlib import asynccontextmanager
-from typing import TYPE_CHECKING, Any
+from pathlib import Path
+from typing import Any
 from urllib.parse import urlparse
 
 from etchdb import sql
-
-if TYPE_CHECKING:
-    from collections.abc import AsyncIterator, Awaitable, Callable, Mapping, Sequence
-    from pathlib import Path
-
-    from etchdb.adapter import AdapterBase
-    from etchdb.migrations import MigrationStatus
-    from etchdb.query import SqlQuery
-    from etchdb.row import Row
-
+from etchdb.adapter import AdapterBase
+from etchdb.migrations import MigrationStatus
+from etchdb.query import SqlQuery
+from etchdb.row import Row
 
 # Postgres caps query parameters at 32767; SQLite is at least 32766 since
 # 3.32. Pick the lower bound so a chunk fits in any backend.
@@ -324,9 +320,11 @@ class DB:
     ) -> None:
         """Insert many rows in one or more multi-VALUES statements.
 
-        All rows must share `model_fields_set`. Long batches are
-        chunked at the driver's parameter limit so a single call can
-        cover thousands of rows. `on_conflict="ignore"` appends
+        All rows must be the same Row subclass and share
+        `model_fields_set`; the whole batch is checked before anything
+        is sent. Long batches are chunked at the driver's parameter
+        limit so a single call can cover thousands of rows; a batch
+        that needs several statements runs them in one transaction. `on_conflict="ignore"` appends
         `ON CONFLICT DO NOTHING`; `on_conflict="upsert"` appends
         `ON CONFLICT (<pk>) DO UPDATE SET <non-pk> = excluded.<non-pk>`.
         Inc / Now sentinels do not compose with upsert; for
@@ -334,16 +332,24 @@ class DB:
         no-op."""
         if not rows:
             return
-        cols_per_row = sum(1 for f in type(rows[0]).model_fields if f in rows[0].model_fields_set)
-        if cols_per_row == 0:
-            raise ValueError("insert_many requires at least one field set on the first row")
-        chunk_size = _PARAM_LIMIT // cols_per_row
-        for i in range(0, len(rows), chunk_size):
-            chunk = rows[i : i + chunk_size]
-            q = sql.insert_many(
-                chunk, placeholder=self._adapter.placeholder, on_conflict=on_conflict
-            )
-            await self._adapter.execute(q.sql, *q.params)
+        chunk_size = _PARAM_LIMIT // len(sql.insert_many_fields(rows))
+        async with self._chunked(len(rows), chunk_size) as adapter:
+            for i in range(0, len(rows), chunk_size):
+                chunk = rows[i : i + chunk_size]
+                q = sql.insert_many(chunk, placeholder=adapter.placeholder, on_conflict=on_conflict)
+                await adapter.execute(q.sql, *q.params)
+
+    @asynccontextmanager
+    async def _chunked(self, total: int, chunk_size: int) -> AsyncIterator[AdapterBase]:
+        """Yield the adapter a chunked batch should run on. A batch
+        that needs more than one statement gets a transaction (a
+        savepoint when already inside one), so a failure in a later
+        chunk does not leave the earlier ones applied."""
+        if total <= chunk_size:
+            yield self._adapter
+            return
+        async with self._adapter.transaction() as tx_adapter:
+            yield tx_adapter
 
     async def delete_many(
         self,
@@ -354,14 +360,16 @@ class DB:
 
         For single-column PK, pass scalar values; for composite PK,
         pass a list of mappings. Long batches are chunked at the
-        driver's parameter limit. Empty `pk_values` is a no-op."""
+        driver's parameter limit and run in one transaction. Empty
+        `pk_values` is a no-op."""
         if not pk_values:
             return
         chunk_size = _PARAM_LIMIT // len(model.__pk__)
-        for i in range(0, len(pk_values), chunk_size):
-            chunk = pk_values[i : i + chunk_size]
-            q = sql.delete_many(model, chunk, placeholder=self._adapter.placeholder)
-            await self._adapter.execute(q.sql, *q.params)
+        async with self._chunked(len(pk_values), chunk_size) as adapter:
+            for i in range(0, len(pk_values), chunk_size):
+                chunk = pk_values[i : i + chunk_size]
+                q = sql.delete_many(model, chunk, placeholder=adapter.placeholder)
+                await adapter.execute(q.sql, *q.params)
 
     async def update(self, row: Row, *, where: Mapping[str, Any] | None = None) -> Row | None:
         """Update `row` by PK, AND'd with `where=`. Returns the updated
