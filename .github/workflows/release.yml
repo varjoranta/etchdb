@@ -33,14 +33,14 @@ jobs:
     runs-on: ubuntu-latest
     steps:
       - name: Checkout
-        uses: actions/checkout@v4
+        uses: actions/checkout@v6
         with:
           # Full history so `gh release create --generate-notes` can
           # diff against the previous tag for the auto-notes body.
           fetch-depth: 0
 
       - name: Install uv (with Python)
-        uses: astral-sh/setup-uv@v5
+        uses: astral-sh/setup-uv@v7
         with:
           # Tests run on 3.13 (current head). The wheel is `py3-none-any`
           # so it installs on every supported version; per-push CI (when
