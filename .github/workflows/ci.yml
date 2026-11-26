@@ -27,6 +27,7 @@ jobs:
           cache-dependency-glob: "pyproject.toml"
       - run: uv sync --extra dev
       - run: uv run ruff check src/etchdb tests
+      - run: uv run ruff format --check src/etchdb tests
 
   unit:
     runs-on: ubuntu-latest

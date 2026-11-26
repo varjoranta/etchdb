@@ -52,6 +52,17 @@ jobs:
           # pyproject.toml so the cache key tracks dependency changes.
           cache-dependency-glob: "pyproject.toml"
 
+      - name: Check the tag matches the package version
+        # A tag pushed before the version bump would build the previous
+        # version's files, which PyPI rejects as a duplicate upload.
+        # Fail here, before anything is built or published.
+        run: |
+          version="$(uv version --short)"
+          if [ "v${version}" != "${GITHUB_REF_NAME}" ]; then
+            echo "::error::tag ${GITHUB_REF_NAME} does not match package version ${version}"
+            exit 1
+          fi
+
       - name: Install dependencies
         run: uv sync --extra all --extra dev
 
