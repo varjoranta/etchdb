@@ -35,14 +35,29 @@ _TRACKING_TABLE_DDL = (
 
 _NO_TRANSACTION_MARKER = "-- etchdb:no-transaction"
 
-# Strip dollar-quoted blocks, string literals, and line comments
-# before the transaction-keyword check, so a `BEGIN` inside PL/pgSQL
-# or a `COMMIT` inside a string literal doesn't trip the regex.
-_DOLLAR_QUOTED_RE = re.compile(r"\$([A-Za-z_]*)\$.*?\$\1\$", re.DOTALL)
-_STRING_LITERAL_RE = re.compile(r"'(?:[^']|'')*'")
-_LINE_COMMENT_RE = re.compile(r"--[^\n]*")
+# Comments, string literals, quoted identifiers and dollar-quoted bodies
+# cannot hold a statement, so they are blanked out before the check. One
+# alternation scanned left to right keeps them from hiding one another:
+# an apostrophe inside a comment does not open a string.
+_SKIP_RE = re.compile(
+    r"--[^\n]*"
+    r"|/\*.*?\*/"
+    r"|'(?:[^']|'')*'"
+    r'|"(?:[^"]|"")*"'
+    r"|\$([A-Za-z_][A-Za-z_0-9]*|)\$.*?\$\1\$",
+    re.DOTALL,
+)
+# A SQLite trigger body is `BEGIN stmt; ... END`. Its END is the only one
+# that directly follows a semicolon; a CASE expression's END never does.
+_TRIGGER_BODY_RE = re.compile(
+    r"\bCREATE\s+(?:TEMP(?:ORARY)?\s+)?TRIGGER\b[^;]*?\bBEGIN\b.*?;\s*END\b",
+    re.IGNORECASE | re.DOTALL,
+)
+# Transaction control is a statement of its own, so the keyword counts
+# only at the start of one. END and ABORT are Postgres spellings of
+# COMMIT and ROLLBACK.
 _TX_KEYWORD_RE = re.compile(
-    r"\b(BEGIN|COMMIT|ROLLBACK|START\s+TRANSACTION|END\s+TRANSACTION)\b",
+    r"(?:^|;)\s*(BEGIN|COMMIT|ROLLBACK|ABORT|END|START\s+TRANSACTION)\b",
     re.IGNORECASE,
 )
 
@@ -72,10 +87,8 @@ def _file_checksum(content: str) -> str:
 
 
 def _strip_for_tx_check(sql: str) -> str:
-    s = _DOLLAR_QUOTED_RE.sub("", sql)
-    s = _STRING_LITERAL_RE.sub("", s)
-    s = _LINE_COMMENT_RE.sub("", s)
-    return s
+    s = _SKIP_RE.sub(" ", sql)
+    return _TRIGGER_BODY_RE.sub(" ", s)
 
 
 def _check_no_explicit_transaction(filename: str, content: str) -> None:
@@ -84,8 +97,8 @@ def _check_no_explicit_transaction(filename: str, content: str) -> None:
     if m:
         raise ValueError(
             f"Migration {filename!r} contains explicit transaction control "
-            f"({m.group(1).upper()!r}). etchdb wraps each migration in its own "
-            f"transaction; remove BEGIN / COMMIT / ROLLBACK from the file. For "
+            f"({' '.join(m.group(1).upper().split())!r}). etchdb wraps each migration in its "
+            f"own transaction; remove BEGIN / COMMIT / ROLLBACK from the file. For "
             f"non-transactional DDL (e.g. CREATE INDEX CONCURRENTLY), put "
             f"`{_NO_TRANSACTION_MARKER}` on the first non-blank line."
         )

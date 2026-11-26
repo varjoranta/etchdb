@@ -151,8 +151,21 @@ class PsycopgAdapter(AdapterBase):
             return cur.rowcount
 
     async def execute_script(self, sql: str) -> None:
-        async with _wrap_errors(), self._cursor() as cur:
-            await cur.execute(cast(Any, sql))
+        # Outside `transaction()` the script must not run inside one:
+        # this is the path for `CREATE INDEX CONCURRENTLY` and the like.
+        # psycopg opens a transaction before the first statement unless
+        # the connection is in autocommit mode, so switch it on for the
+        # script and put the pool's setting back afterwards.
+        async with _wrap_errors(), self._pool.connection() as conn:
+            was_autocommit = conn.autocommit
+            if not was_autocommit:
+                await conn.set_autocommit(True)
+            try:
+                async with psycopg.AsyncRawCursor(conn) as cur:
+                    await cur.execute(cast(Any, sql))
+            finally:
+                if not was_autocommit:
+                    await conn.set_autocommit(False)
 
     async def fetch(self, sql: str, *params: Any) -> list[dict[str, Any]]:
         async with _wrap_errors(), self._cursor() as cur:

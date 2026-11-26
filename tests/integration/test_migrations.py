@@ -340,3 +340,37 @@ async def test_migrate_no_transaction_marker_applies(db: DB, tmp_path: Path):
     finally:
         await db.execute("DROP TABLE IF EXISTS m_marked")
         await _reset_tracking(db)
+
+
+async def test_migrate_no_transaction_marker_runs_outside_a_transaction(
+    pg_url: str, tmp_path: Path
+):
+    """`CREATE INDEX CONCURRENTLY` is the reason the marker exists, and
+    Postgres refuses it inside a transaction block. A statement that
+    also runs inside one (the CREATE TABLE above) cannot tell the two
+    paths apart."""
+    db = await DB.from_url(pg_url)
+    await _reset_tracking(db)
+    await db.execute("DROP TABLE IF EXISTS m_concurrent")
+    await db.execute("CREATE TABLE m_concurrent (id INTEGER PRIMARY KEY, name TEXT)")
+    _write(
+        tmp_path,
+        "0001_index.sql",
+        "-- etchdb:no-transaction\n"
+        "CREATE INDEX CONCURRENTLY m_concurrent_name_idx ON m_concurrent (name);",
+    )
+    try:
+        assert await db.migrate(tmp_path) == 1
+        assert await db.fetchval("SELECT to_regclass('m_concurrent_name_idx')::text") == (
+            "m_concurrent_name_idx"
+        )
+        # The pooled connection went back in its normal mode.
+        with pytest.raises(RuntimeError):
+            async with db.transaction() as tx:
+                await tx.execute("INSERT INTO m_concurrent (id) VALUES (1)")
+                raise RuntimeError("roll back")
+        assert await db.fetchval("SELECT count(*) FROM m_concurrent") == 0
+    finally:
+        await db.execute("DROP TABLE IF EXISTS m_concurrent")
+        await _reset_tracking(db)
+        await db.close()

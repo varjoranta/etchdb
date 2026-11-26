@@ -372,15 +372,17 @@ if not status.is_consistent:
 
 ### Transaction model
 
-Each migration runs in its own implicit transaction on Postgres. Don't write `BEGIN` / `COMMIT` / `ROLLBACK` in the file — the runner owns transaction control and rejects files that try to take it back (with PL/pgSQL `DO $$ ... $$` blocks and string literals stripped first, so legitimate uses don't trip the check).
+Each migration runs in its own implicit transaction on Postgres. Don't write `BEGIN` / `COMMIT` / `ROLLBACK` in the file — the runner owns transaction control and rejects files that try to take it back, including the Postgres spellings `END` and `ABORT`. The check looks only at the start of each statement and skips comments, string literals, dollar-quoted bodies (`DO $$ ... $$`) and SQLite trigger bodies (`CREATE TRIGGER ... BEGIN ... END`), so legitimate uses don't trip it.
 
 For DDL that Postgres won't run inside a transaction (notably `CREATE INDEX CONCURRENTLY`), put `-- etchdb:no-transaction` on the first non-blank line:
 
 ```sql
--- migrations/0004_concurrent_index.sql
 -- etchdb:no-transaction
+-- migrations/0004_concurrent_index.sql
 CREATE INDEX CONCURRENTLY users_lower_email_idx ON users (lower(email));
 ```
+
+The marker must be the first non-blank line; a comment above it turns it into an ordinary comment.
 
 On SQLite a migration runs through `sqlite3.executescript` inside the same kind of transaction: a file that fails part-way is rolled back together with its tracking row, so fixing the file and re-running applies it cleanly. That holds for connections etchdb opens (`DB.from_url`, the CLI). A connection you open yourself and wrap with `AiosqliteAdapter.from_connection` is in sqlite3's legacy transaction mode unless you pass `autocommit=True` to `aiosqlite.connect`, and in that mode `executescript` commits before it runs, so a failed file can leave its earlier statements applied.
 

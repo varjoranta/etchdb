@@ -124,3 +124,43 @@ def test_migration_status_inconsistent_on_drift():
 def test_migration_status_inconsistent_on_missing():
     s = MigrationStatus(applied=[], missing=["0001_gone.sql"])
     assert s.is_consistent is False
+
+
+# --- statement-level transaction check -------------------------------
+
+
+@pytest.mark.parametrize(
+    "sql",
+    [
+        "CREATE TABLE a (x int);\nEND;\nCREATE TABLE b (x int);",
+        "CREATE TABLE a (x int); abort;",
+        "-- header\nBEGIN;\nCREATE TABLE a (x int);",
+        "CREATE TABLE a (x int);\n  start   transaction;",
+        # An apostrophe in a comment must not open a string literal
+        # that swallows the COMMIT after it.
+        "-- don't\nCOMMIT;\nSELECT 'x';",
+        # A trigger without a body must not hide a later BEGIN.
+        "CREATE TRIGGER t AFTER INSERT ON a EXECUTE FUNCTION f();\nBEGIN;\nSELECT 1; END;",
+    ],
+)
+def test_check_rejects_transaction_control_statements(sql):
+    with pytest.raises(ValueError, match="explicit transaction control"):
+        _check_no_explicit_transaction("f.sql", sql)
+
+
+@pytest.mark.parametrize(
+    "sql",
+    [
+        "/* BEGIN here; COMMIT; */ CREATE TABLE a (x int);",
+        "CREATE TRIGGER tr AFTER INSERT ON t BEGIN UPDATE t SET name = 'x'; END;",
+        "CREATE TEMP TRIGGER tr AFTER INSERT ON t BEGIN\n"
+        "  UPDATE t SET n = CASE WHEN n > 1 THEN 1 ELSE 2 END;\n"
+        "  DELETE FROM u;\nEND;\nCREATE TABLE b (x int);",
+        "DO $f1$ BEGIN PERFORM 1; COMMIT; END $f1$;",
+        "SELECT CASE WHEN 1 = 1 THEN 1 END;",
+        'CREATE TABLE "begin" (commit_at timestamptz, "end" int);',
+        "CREATE TABLE a (begin_at int, rollback_reason text);",
+    ],
+)
+def test_check_allows_keywords_that_are_not_statements(sql):
+    _check_no_explicit_transaction("f.sql", sql)

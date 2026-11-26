@@ -10,6 +10,7 @@ unavailable.
 
 import os
 import socket
+from urllib.parse import urlparse
 
 import pytest
 import pytest_asyncio
@@ -24,9 +25,19 @@ POSTGRES_ASYNCPG_URL = f"postgresql+asyncpg://{POSTGRES_DSN}"
 POSTGRES_PSYCOPG_URL = f"postgresql+psycopg://{POSTGRES_DSN}"
 
 
+_POSTGRES_HOSTPORT = urlparse(POSTGRES_ASYNCPG_URL)
+_POSTGRES_SKIP = (
+    f"Postgres not available on {_POSTGRES_HOSTPORT.hostname}:{_POSTGRES_HOSTPORT.port or 5432}. "
+    "Run `make db-up`."
+)
+
+
 def _postgres_available() -> bool:
+    """Probe the host and port the DSN names, so a DSN pointing at
+    another port is not skipped (or attempted) on the default one."""
+    address = (_POSTGRES_HOSTPORT.hostname or "localhost", _POSTGRES_HOSTPORT.port or 5432)
     try:
-        with socket.create_connection(("localhost", 5532), timeout=0.5):
+        with socket.create_connection(address, timeout=0.5):
             return True
     except OSError:
         return False
@@ -58,7 +69,7 @@ async def sqlite_db():
 
 async def _open_postgres(url: str) -> DB:
     if not _postgres_available():
-        pytest.skip("Postgres not available on localhost:5532. Run `make db-up`.")
+        pytest.skip(_POSTGRES_SKIP)
     db = await DB.from_url(url)
     await db.execute("DROP TABLE IF EXISTS users CASCADE")
     await db.execute("DROP TABLE IF EXISTS user_roles CASCADE")
@@ -79,6 +90,15 @@ async def postgres_psycopg_db():
     db = await _open_postgres(POSTGRES_PSYCOPG_URL)
     yield db
     await db.close()
+
+
+@pytest.fixture(params=[POSTGRES_ASYNCPG_URL, POSTGRES_PSYCOPG_URL])
+def pg_url(request) -> str:
+    """Each Postgres driver's URL in turn, for tests that open their
+    own DB (pool options, connection hooks)."""
+    if not _postgres_available():
+        pytest.skip(_POSTGRES_SKIP)
+    return request.param
 
 
 @pytest.fixture(params=["sqlite_db", "postgres_asyncpg_db", "postgres_psycopg_db"])
