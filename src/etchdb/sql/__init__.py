@@ -176,9 +176,7 @@ def select_keyset(
     order_cols = [by] + [p for p in row_class.__pk__ if p != by]
     for col in order_cols:
         if col not in db_fields:
-            raise ValueError(
-                f"keyset column {col!r} is not a DB column on {row_class.__name__}."
-            )
+            raise ValueError(f"keyset column {col!r} is not a DB column on {row_class.__name__}.")
 
     table = _table_name(row_class)
     columns = ", ".join(db_fields)

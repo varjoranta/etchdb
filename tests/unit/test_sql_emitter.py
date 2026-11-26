@@ -792,9 +792,7 @@ def test_select_keyset_null_region_cursor_pg():
 def test_select_keyset_composite_pk_emits_three_col_cursor_pg():
     """Composite PK with non-PK `by`: cursor extends through both PK
     columns so ties resolve through the full unique key."""
-    q = sql.select_keyset(
-        UserRole, placeholder=pg, by="note", batch_size=2, last_seen=["x", 1, 10]
-    )
+    q = sql.select_keyset(UserRole, placeholder=pg, by="note", batch_size=2, last_seen=["x", 1, 10])
     assert q.sql == (
         "SELECT user_id, role_id, note FROM user_roles "
         "WHERE (note, user_id, role_id) > ($1, $2, $3) "
