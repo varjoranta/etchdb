@@ -253,8 +253,16 @@ db = await DB.from_url(
 )
 ```
 
-With psycopg, leave the connection idle after setup SQL, as required by
-psycopg_pool. Commit setup statements explicitly:
+Use the asyncpg callback for codecs and types, not for session settings.
+asyncpg runs `RESET ALL` when a connection returns to the pool, so a `SET`
+made in `configure` lasts only until the first query finishes. Put session
+settings in the URL instead (`postgresql+asyncpg://user@host/db?search_path=app`);
+asyncpg sends unrecognised query parameters as server settings on every
+connection.
+
+With psycopg, session settings made in `configure` do persist. Leave the
+connection idle after setup SQL, as required by psycopg_pool, by committing
+setup statements explicitly:
 
 ```python
 async def configure(conn):
@@ -264,7 +272,11 @@ async def configure(conn):
 
 Setup exceptions propagate to the driver's pool, which retains its native
 startup/reconnection behavior; etchdb does not retry application statements.
-SQLite rejects `configure` rather than silently ignoring it.
+The two pools differ in when you hear about it. asyncpg connects inside
+`from_url`, so a failing callback raises there. psycopg_pool connects in the
+background: `from_url` returns, the failure goes to the `psycopg.pool` logger,
+and the first query waits for the pool's timeout (30 seconds by default)
+before raising. SQLite rejects `configure` rather than silently ignoring it.
 
 Driver-specific options stay on the adapters. For connection validation at
 checkout with psycopg:
@@ -281,7 +293,8 @@ db = DB(await PsycopgAdapter.from_url(
 ```
 
 `AsyncpgAdapter.from_url(..., command_timeout=60)` sets asyncpg's default
-command timeout in seconds. Both adapters accept `configure`, `min_size` and
+command timeout in seconds. A statement that exceeds it raises the built-in
+`TimeoutError`, not an etchdb error. Both adapters accept `configure`, `min_size` and
 `max_size`. Omitted options retain driver defaults.
 
 ### Externally owned pools

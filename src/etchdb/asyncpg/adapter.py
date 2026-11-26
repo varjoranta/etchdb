@@ -32,13 +32,24 @@ async def configure_codecs(conn: asyncpg.Connection) -> None:
 # Compatibility for applications that imported the old private callback.
 _init_codecs = configure_codecs
 
-# Exact strings from asyncpg's Pool._check_init. Matched literally rather
-# than by substring so an asyncpg reword fails the pinning test loudly
-# instead of silently reverting to an unhelpful bare traceback. The third
-# _check_init message ("pool is being initialized, but not yet ready") is
-# deliberately absent: that one is a startup race, not a stale adapter, and
-# wants different advice.
-_POOL_STATE_MSGS = frozenset({"pool is closed", "pool is not initialized"})
+# Exact strings from asyncpg's Pool._check_init, each with the advice
+# that fits it. Matched literally rather than by substring so an asyncpg
+# reword fails the pinning test loudly instead of silently reverting to an
+# unhelpful bare traceback. The third _check_init message ("pool is being
+# initialized, but not yet ready") is deliberately absent: that one is a
+# startup race and wants different advice.
+_POOL_STATE_MSGS = {
+    "pool is closed": (
+        "the pool behind this DB has been closed. If it was closed and "
+        "recreated (app restart, test teardown, reconnect), build a new DB "
+        "or adapter from the new pool: from_pool() keeps the pool object it "
+        "was given, and a DB from from_url() cannot be used after close()."
+    ),
+    "pool is not initialized": (
+        "the pool passed to from_pool() was never opened. Await "
+        "asyncpg.create_pool(...) before wrapping it."
+    ),
+}
 
 
 def _map_exception(exc: BaseException) -> errors.EtchdbError | None:
@@ -61,14 +72,8 @@ def _map_exception(exc: BaseException) -> errors.EtchdbError | None:
     if isinstance(exc, asyncpg.exceptions.InterfaceError) and str(exc) in _POOL_STATE_MSGS:
         # Pool._check_init raises these when the wrapped pool is closed or
         # was never opened. Unmapped, it surfaces as a bare asyncpg traceback
-        # ending inside pool.py that names neither etchdb nor the actual
-        # cause: a caller holding an adapter built from a pool since replaced.
-        return errors.OperationalError(
-            f"{exc} — from_pool() holds the pool object you passed it. If the "
-            "pool gets closed and recreated (app restart, test teardown, "
-            "reconnect), build a new adapter from the new pool; the old "
-            "adapter keeps the dead one."
-        )
+        # ending inside pool.py that names neither etchdb nor a cause.
+        return errors.OperationalError(f"{exc}: {_POOL_STATE_MSGS[str(exc)]}")
     return None
 
 
@@ -82,10 +87,13 @@ class AsyncpgAdapter(AdapterBase):
     (etchdb will not close it), or `await from_url(url)` to let etchdb
     create and own the pool. The `owns_pool` flag tracks ownership.
 
-    `from_url` accepts `min_size` / `max_size`. For pool concerns
-    beyond size (custom `init=`, `statement_cache_size`, ENUM codecs),
-    create the pool yourself with `asyncpg.create_pool(...)` and pass
-    it to `from_pool`.
+    `from_url` accepts `min_size` / `max_size`, `command_timeout` and
+    a `configure` callback for per-connection setup such as ENUM
+    codecs. For anything else (`statement_cache_size`, a `setup=`
+    callback), create the pool yourself with
+    `asyncpg.create_pool(...)`, call `configure_codecs` from its
+    `init=` to keep etchdb's JSONB behaviour, and pass it to
+    `from_pool`.
     """
 
     def __init__(self, pool: asyncpg.Pool, *, owns_pool: bool = False):
@@ -119,9 +127,17 @@ class AsyncpgAdapter(AdapterBase):
 
         `configure` runs after the built-in JSONB codec on each new
         connection, using asyncpg's pool `init` callback. It may add or
-        override codecs. `command_timeout` sets asyncpg's default command
-        timeout in seconds. Pool sizes and timeout retain driver defaults
-        when omitted. For other options, use `from_pool`.
+        override codecs. It is not the place for session settings:
+        asyncpg runs `RESET ALL` when a connection goes back to the
+        pool, so a `SET` made here is gone after the first query. Put
+        those in the URL query (`?search_path=app`), which asyncpg
+        sends as server settings on every connection.
+
+        `command_timeout` sets asyncpg's default command timeout in
+        seconds; a statement that exceeds it raises the built-in
+        `TimeoutError`, not an etchdb error. Pool sizes and timeout
+        retain driver defaults when omitted. For other options, use
+        `from_pool`.
         """
         pool_kwargs: dict[str, Any] = {"init": _with_configure(configure_codecs, configure)}
         if min_size is not None:

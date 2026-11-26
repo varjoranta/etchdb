@@ -5,7 +5,9 @@ The pool kwargs forward to asyncpg's `create_pool` and psycopg's
 kwargs purely for cross-driver consistency so the same call site
 works on every backend."""
 
-from etchdb import DB
+import pytest
+
+from etchdb import DB, OperationalError
 
 
 async def test_from_url_min_max_size_round_trip(pg_url: str):
@@ -28,17 +30,40 @@ async def test_from_url_aiosqlite_accepts_pool_kwargs():
         await db.close()
 
 
-async def test_configure_preserves_jsonb_and_applies_session_setup(pg_url: str):
+async def test_configure_survives_reuse_of_the_connection(pg_url: str):
+    """One connection, used three times. What `configure` set up must
+    still be there after the connection has been back to the pool:
+    asyncpg resets session state on release, so its callback registers
+    a codec, which is the documented use. psycopg keeps a committed
+    `SET`."""
     import psycopg
 
     async def configure(conn):
-        await conn.execute("SET application_name = 'etchdb_hook_test'")
         if isinstance(conn, psycopg.AsyncConnection):
+            await conn.execute("SET application_name = 'etchdb_hook_test'")
             await conn.commit()
+        else:
+            await conn.set_type_codec(
+                "numeric", encoder=str, decoder=lambda v: f"n:{v}", schema="pg_catalog"
+            )
 
-    db = await DB.from_url(pg_url, min_size=1, max_size=2, configure=configure)
+    db = await DB.from_url(pg_url, min_size=1, max_size=1, configure=configure)
     try:
-        assert await db.fetchval("SELECT current_setting('application_name')") == "etchdb_hook_test"
-        assert await db.fetchval("SELECT $1::jsonb", {"nested": [1, 2]}) == {"nested": [1, 2]}
+        for _ in range(3):
+            if pg_url.startswith("postgresql+psycopg"):
+                assert await db.fetchval("SHOW application_name") == "etchdb_hook_test"
+            else:
+                assert await db.fetchval("SELECT 1.5::numeric") == "n:1.5"
+            # etchdb's own codec is still in place next to the callback's.
+            assert await db.fetchval("SELECT $1::jsonb", {"nested": [1, 2]}) == {"nested": [1, 2]}
     finally:
         await db.close()
+
+
+async def test_query_after_close_raises_operational_error(pg_url: str):
+    """The real drivers, not a constructed exception: a DB used after
+    its own close() raises the etchdb error on both."""
+    db = await DB.from_url(pg_url, min_size=1, max_size=1)
+    await db.close()
+    with pytest.raises(OperationalError):
+        await db.fetchval("SELECT 1")

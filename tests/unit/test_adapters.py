@@ -71,21 +71,22 @@ def test_rowcount_from_status_select_returns_minus_one():
 
 
 def test_asyncpg_closed_pool_maps_to_operational_error_with_guidance():
-    """A stale adapter is the likeliest cause of a closed-pool error, and
-    the raw asyncpg traceback names neither etchdb nor that cause.
+    """The raw asyncpg traceback names neither etchdb nor a cause.
 
-    from_pool() captures the pool object, so an adapter cached across a
-    close/recreate cycle keeps serving the dead pool. Callers hit this in
-    test teardown and on reconnect, and the bare InterfaceError sends them
-    reading asyncpg internals instead of their own caching.
+    The message has to fit both ways of getting here: a from_pool()
+    adapter cached across a close/recreate cycle, which keeps serving
+    the dead pool, and a from_url() DB used after its own close().
     """
     mapped = _map_exception(asyncpg.exceptions.InterfaceError("pool is closed"))
     assert isinstance(mapped, errors.OperationalError)
     assert "pool is closed" in str(mapped)
     assert "from_pool()" in str(mapped)
+    assert "from_url()" in str(mapped)
 
     mapped = _map_exception(asyncpg.exceptions.InterfaceError("pool is not initialized"))
     assert isinstance(mapped, errors.OperationalError)
+    assert "never opened" in str(mapped)
+    assert "recreated" not in str(mapped)
 
 
 def test_asyncpg_other_interface_errors_still_propagate():

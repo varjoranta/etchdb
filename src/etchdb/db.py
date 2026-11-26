@@ -89,7 +89,9 @@ class DB:
         and are ignored on aiosqlite (no pool concept).
         `configure` runs on every new Postgres connection after etchdb's
         built-in codecs. Its connection type depends on the selected driver.
-        With psycopg, setup SQL must leave the connection idle. SQLite
+        With psycopg, setup SQL must leave the connection idle. With
+        asyncpg, use it for codecs and not for `SET`: asyncpg resets
+        session state when a connection returns to the pool. SQLite
         rejects this Postgres-only hook. For driver-specific options, use
         the adapter's `from_url` or wrap your own pool with `from_pool`.
         """
