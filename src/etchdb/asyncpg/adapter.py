@@ -10,7 +10,7 @@ from typing import Any
 import asyncpg
 
 from etchdb import errors
-from etchdb.adapter import AdapterBase
+from etchdb.adapter import AdapterBase, rowcount_from_status
 from etchdb.codecs import _with_configure, json_dumps
 
 
@@ -75,29 +75,6 @@ def _map_exception(exc: BaseException) -> errors.EtchdbError | None:
 _wrap_errors = errors.wrap(_map_exception)
 
 
-_DML_TAGS = ("INSERT", "UPDATE", "DELETE")
-
-
-def _rowcount_from_status(status: str) -> int:
-    """Extract the affected-row count from an asyncpg command tag.
-
-    DML tags ('UPDATE 5', 'DELETE 3', 'INSERT 0 5') end in the
-    count and parse to a non-negative int. Anything else (DDL,
-    `BEGIN`, `SELECT`, `COPY`) returns -1, matching the psycopg /
-    sqlite3 'no rowcount available' sentinel. SELECT in particular
-    would otherwise parse to its row count, which `db.execute`
-    explicitly does not promise across drivers.
-    """
-    verb, _, _ = status.partition(" ")
-    if verb not in _DML_TAGS:
-        return -1
-    tail = status.rsplit(" ", 1)[-1]
-    try:
-        return int(tail)
-    except ValueError:
-        return -1
-
-
 class AsyncpgAdapter(AdapterBase):
     """AdapterBase implementation backed by an asyncpg pool.
 
@@ -158,7 +135,7 @@ class AsyncpgAdapter(AdapterBase):
 
     async def execute(self, sql: str, *params: Any) -> int:
         async with _wrap_errors(), self._pool.acquire() as conn:
-            return _rowcount_from_status(await conn.execute(sql, *params))
+            return rowcount_from_status(await conn.execute(sql, *params))
 
     async def execute_script(self, sql: str) -> None:
         async with _wrap_errors(), self._pool.acquire() as conn:
@@ -200,7 +177,7 @@ class _AsyncpgConnAdapter(AdapterBase):
 
     async def execute(self, sql: str, *params: Any) -> int:
         async with _wrap_errors():
-            return _rowcount_from_status(await self._conn.execute(sql, *params))
+            return rowcount_from_status(await self._conn.execute(sql, *params))
 
     async def execute_script(self, sql: str) -> None:
         async with _wrap_errors():

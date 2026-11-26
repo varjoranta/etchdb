@@ -28,11 +28,12 @@ class AdapterBase(ABC):
         """Execute a statement and return the affected-row count.
 
         Returns the affected-row count for DML (INSERT / UPDATE /
-        DELETE), or `-1` for everything else (DDL, BEGIN, SELECT,
-        COPY, ...). The `-1` sentinel mirrors psycopg's and sqlite3's
-        native convention. SELECT through `execute` is explicitly not
-        a count contract; use `fetch` / `fetchrow` / `fetchval` for
-        SELECT and read the row count off the result.
+        DELETE), with or without RETURNING, or `-1` for everything
+        else (DDL, BEGIN, SELECT, COPY, ...). The `-1` sentinel
+        mirrors psycopg's and sqlite3's native convention. SELECT
+        through `execute` is explicitly not a count contract; use
+        `fetch` / `fetchrow` / `fetchval` for SELECT and read the row
+        count off the result.
         """
         ...
 
@@ -78,3 +79,27 @@ class AdapterBase(ABC):
         this is a no-op; the caller owns the pool's lifecycle.
         """
         ...
+
+
+_DML_TAGS = ("INSERT", "UPDATE", "DELETE")
+
+
+def rowcount_from_status(status: str) -> int:
+    """Extract the affected-row count from a Postgres command tag.
+
+    DML tags ('UPDATE 5', 'DELETE 3', 'INSERT 0 5') end in the
+    count and parse to a non-negative int, with or without a
+    RETURNING clause. Anything else (DDL, `BEGIN`, `SELECT`, `COPY`)
+    returns -1, the sqlite3 'no rowcount available' sentinel. SELECT
+    in particular would otherwise parse to its row count, which
+    `db.execute` explicitly does not promise across drivers. Both
+    Postgres adapters read the tag, so they agree.
+    """
+    verb, _, _ = status.partition(" ")
+    if verb not in _DML_TAGS:
+        return -1
+    tail = status.rsplit(" ", 1)[-1]
+    try:
+        return int(tail)
+    except ValueError:
+        return -1

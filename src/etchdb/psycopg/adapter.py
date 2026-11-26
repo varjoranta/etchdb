@@ -18,7 +18,7 @@ from psycopg.types.json import JsonbDumper
 from psycopg_pool import AsyncConnectionPool
 
 from etchdb import errors
-from etchdb.adapter import AdapterBase
+from etchdb.adapter import AdapterBase, rowcount_from_status
 from etchdb.codecs import _with_configure, json_dumps
 
 
@@ -146,9 +146,7 @@ class PsycopgAdapter(AdapterBase):
     async def execute(self, sql: str, *params: Any) -> int:
         async with _wrap_errors(), self._cursor() as cur:
             await cur.execute(cast(Any, sql), params)
-            if cur.description is not None:
-                return -1
-            return cur.rowcount
+            return rowcount_from_status(cur.statusmessage or "")
 
     async def execute_script(self, sql: str) -> None:
         # Outside `transaction()` the script must not run inside one:
@@ -214,9 +212,7 @@ class _PsycopgConnAdapter(AdapterBase):
     async def execute(self, sql: str, *params: Any) -> int:
         async with _wrap_errors(), self._cursor() as cur:
             await cur.execute(cast(Any, sql), params)
-            if cur.description is not None:
-                return -1
-            return cur.rowcount
+            return rowcount_from_status(cur.statusmessage or "")
 
     async def execute_script(self, sql: str) -> None:
         async with _wrap_errors(), self._cursor() as cur:

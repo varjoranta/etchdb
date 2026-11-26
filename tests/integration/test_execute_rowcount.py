@@ -64,3 +64,13 @@ async def test_execute_select_returns_minus_one(db: DB):
     await db.insert(User(id=2, name="bob"))
     n = await db.execute("SELECT * FROM users")
     assert n == -1
+
+
+async def test_execute_dml_with_returning_returns_count(db: DB):
+    """RETURNING does not change what `execute` reports. psycopg used
+    to answer -1 here and SQLite raised."""
+    n = await db.execute("INSERT INTO users (id, name) VALUES (1, 'a'), (2, 'b') RETURNING id")
+    assert n == 2
+    async with db.transaction() as tx:
+        assert await tx.execute("UPDATE users SET email = 'x@x' RETURNING id") == 2
+        assert await tx.execute("DELETE FROM users WHERE id = 1 RETURNING id") == 1
