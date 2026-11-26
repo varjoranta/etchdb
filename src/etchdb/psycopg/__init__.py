@@ -15,6 +15,6 @@ except ImportError as e:
         "Install with: pip install etchdb[psycopg]"
     ) from e
 
-from etchdb.psycopg.adapter import PsycopgAdapter
+from etchdb.psycopg.adapter import PsycopgAdapter, configure_codecs
 
-__all__ = ["PsycopgAdapter"]
+__all__ = ["PsycopgAdapter", "configure_codecs"]

@@ -12,6 +12,6 @@ except ImportError as e:
         "etchdb.asyncpg requires the asyncpg package. Install with: pip install etchdb[asyncpg]"
     ) from e
 
-from etchdb.asyncpg.adapter import AsyncpgAdapter
+from etchdb.asyncpg.adapter import AsyncpgAdapter, configure_codecs
 
-__all__ = ["AsyncpgAdapter"]
+__all__ = ["AsyncpgAdapter", "configure_codecs"]

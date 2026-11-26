@@ -3,7 +3,7 @@
 from __future__ import annotations
 
 import json
-from collections.abc import AsyncIterator
+from collections.abc import AsyncIterator, Awaitable, Callable
 from contextlib import asynccontextmanager
 from typing import Any
 
@@ -11,10 +11,10 @@ import asyncpg
 
 from etchdb import errors
 from etchdb.adapter import AdapterBase
-from etchdb.codecs import json_dumps
+from etchdb.codecs import _with_configure, json_dumps
 
 
-async def _init_codecs(conn: asyncpg.Connection) -> None:
+async def configure_codecs(conn: asyncpg.Connection) -> None:
     """Pool `init=` callback: register a JSONB codec on every new
     connection so `dict | list` round-trips with UUID, datetime, Enum,
     and Pydantic BaseModel encoded transparently. asyncpg returns JSONB
@@ -28,6 +28,9 @@ async def _init_codecs(conn: asyncpg.Connection) -> None:
         format="text",
     )
 
+
+# Compatibility for applications that imported the old private callback.
+_init_codecs = configure_codecs
 
 # Exact strings from asyncpg's Pool._check_init. Matched literally rather
 # than by substring so an asyncpg reword fails the pinning test loudly
@@ -128,6 +131,8 @@ class AsyncpgAdapter(AdapterBase):
         *,
         min_size: int | None = None,
         max_size: int | None = None,
+        configure: Callable[[asyncpg.Connection], Awaitable[None]] | None = None,
+        command_timeout: float | None = None,
     ) -> AsyncpgAdapter:
         """Create an asyncpg pool from `url` and wrap it.
 
@@ -135,16 +140,19 @@ class AsyncpgAdapter(AdapterBase):
         initialised with a JSONB codec that handles UUID, datetime,
         Enum, and Pydantic BaseModel transparently.
 
-        `min_size` / `max_size` are forwarded to `asyncpg.create_pool`
-        if set. For pool concerns beyond size (asyncpg's
-        `statement_cache_size`, custom ENUM codecs, etc.), construct
-        the pool yourself and use `from_pool`.
+        `configure` runs after the built-in JSONB codec on each new
+        connection, using asyncpg's pool `init` callback. It may add or
+        override codecs. `command_timeout` sets asyncpg's default command
+        timeout in seconds. Pool sizes and timeout retain driver defaults
+        when omitted. For other options, use `from_pool`.
         """
-        pool_kwargs: dict[str, Any] = {"init": _init_codecs}
+        pool_kwargs: dict[str, Any] = {"init": _with_configure(configure_codecs, configure)}
         if min_size is not None:
             pool_kwargs["min_size"] = min_size
         if max_size is not None:
             pool_kwargs["max_size"] = max_size
+        if command_timeout is not None:
+            pool_kwargs["command_timeout"] = command_timeout
         pool = await asyncpg.create_pool(url, **pool_kwargs)
         return cls(pool, owns_pool=True)
 

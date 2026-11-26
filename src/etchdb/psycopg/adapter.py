@@ -7,7 +7,7 @@ swap between the two Postgres adapters without rewriting their queries.
 
 from __future__ import annotations
 
-from collections.abc import AsyncIterator
+from collections.abc import AsyncIterator, Awaitable, Callable
 from contextlib import asynccontextmanager
 from typing import Any, cast
 
@@ -19,7 +19,7 @@ from psycopg_pool import AsyncConnectionPool
 
 from etchdb import errors
 from etchdb.adapter import AdapterBase
-from etchdb.codecs import json_dumps
+from etchdb.codecs import _with_configure, json_dumps
 
 
 class _DictAsJsonbDumper(JsonbDumper):
@@ -35,7 +35,7 @@ class _DictAsJsonbDumper(JsonbDumper):
     _dumps = staticmethod(json_dumps)
 
 
-async def _init_codecs(conn: psycopg.AsyncConnection) -> None:
+async def configure_codecs(conn: psycopg.AsyncConnection) -> None:
     """Pool `configure=` callback: encode UUID, datetime, Enum,
     Pydantic BaseModel and friends in JSONB, and auto-adapt raw
     `dict` / `list` parameters as jsonb so application code doesn't
@@ -43,6 +43,10 @@ async def _init_codecs(conn: psycopg.AsyncConnection) -> None:
     psycopg.types.json.set_json_dumps(json_dumps, conn)
     conn.adapters.register_dumper(dict, _DictAsJsonbDumper)
     conn.adapters.register_dumper(list, _DictAsJsonbDumper)
+
+
+# Compatibility for applications that imported the old private callback.
+_init_codecs = configure_codecs
 
 
 def _map_exception(exc: BaseException) -> errors.EtchdbError | None:
@@ -94,6 +98,8 @@ class PsycopgAdapter(AdapterBase):
         *,
         min_size: int | None = None,
         max_size: int | None = None,
+        configure: Callable[[psycopg.AsyncConnection], Awaitable[None]] | None = None,
+        check: Callable[[psycopg.AsyncConnection], Awaitable[None]] | None = None,
     ) -> PsycopgAdapter:
         """Open a psycopg AsyncConnectionPool against `url` and wrap it.
 
@@ -101,16 +107,24 @@ class PsycopgAdapter(AdapterBase):
         configured with a JSON encoder that handles UUID, datetime,
         Enum, and Pydantic BaseModel transparently.
 
-        `min_size` / `max_size` are forwarded to `AsyncConnectionPool`
-        if set. For pool concerns beyond size (psycopg's
-        `prepare_threshold`, custom dumpers, etc.), construct the
-        pool yourself and use `from_pool`.
+        `configure` runs after the built-in JSONB setup on each new
+        connection. As with psycopg_pool's configure callback, leave the
+        connection idle (commit or roll back any setup SQL). `check` is
+        the pool's checkout callback; pass
+        `AsyncConnectionPool.check_connection` to validate connections.
+        Pool sizes retain driver defaults when omitted. For other
+        options, use `from_pool`.
         """
-        pool_kwargs: dict[str, Any] = {"open": False, "configure": _init_codecs}
+        pool_kwargs: dict[str, Any] = {
+            "open": False,
+            "configure": _with_configure(configure_codecs, configure),
+        }
         if min_size is not None:
             pool_kwargs["min_size"] = min_size
         if max_size is not None:
             pool_kwargs["max_size"] = max_size
+        if check is not None:
+            pool_kwargs["check"] = check
         pool = AsyncConnectionPool(url, **pool_kwargs)
         await pool.open()
         return cls(pool, owns_pool=True)

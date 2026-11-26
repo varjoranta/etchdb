@@ -232,14 +232,71 @@ from etchdb.asyncpg import AsyncpgAdapter     # requires asyncpg
 db = DB(AsyncpgAdapter.from_pool(my_pool))
 ```
 
-`from_url` registers a JSONB codec on every connection so `dict` and `list` parameters round-trip with `UUID`, `datetime`, `Enum`, and Pydantic `BaseModel` values handled transparently. JSONB columns come back as Python objects directly: no `json.loads` at the call site, no manual `json.dumps` to insert. For pool-init concerns beyond that (pgvector tuning, custom ENUM codec, custom `min_size` / `max_size`), construct the pool yourself and pass it via `from_pool`. Example, registering a Postgres ENUM as a Python `str` via asyncpg's `set_type_codec`:
+`from_url` registers a JSONB codec on every connection so `dict` and `list` parameters round-trip with `UUID`, `datetime`, `Enum`, and Pydantic `BaseModel` values handled transparently. JSONB columns come back as Python objects directly: no `json.loads` at the call site, no manual `json.dumps` to insert.
+
+### Connection setup
+
+Pass an async `configure` callback to add connection setup without replacing
+etchdb's codecs. Built-in codecs run first, then your callback runs once for
+each new physical connection, including replacement connections. It receives
+the native connection for the selected driver. For example, with asyncpg:
+
+```python
+async def configure(conn):
+    await conn.set_type_codec(
+        "memory_domain", encoder=str, decoder=str, schema="public", format="text",
+    )
+
+db = await DB.from_url(
+    "postgresql+asyncpg://user@host/db",
+    min_size=2, max_size=10, configure=configure,
+)
+```
+
+With psycopg, leave the connection idle after setup SQL, as required by
+psycopg_pool. Commit setup statements explicitly:
+
+```python
+async def configure(conn):
+    await conn.execute("SET application_name = 'myapp'")
+    await conn.commit()
+```
+
+Setup exceptions propagate to the driver's pool, which retains its native
+startup/reconnection behavior; etchdb does not retry application statements.
+SQLite rejects `configure` rather than silently ignoring it.
+
+Driver-specific options stay on the adapters. For connection validation at
+checkout with psycopg:
+
+```python
+from etchdb.psycopg import PsycopgAdapter
+from psycopg_pool import AsyncConnectionPool
+
+db = DB(await PsycopgAdapter.from_url(
+    "postgresql://user@host/db",
+    check=AsyncConnectionPool.check_connection,
+    configure=configure,
+))
+```
+
+`AsyncpgAdapter.from_url(..., command_timeout=60)` sets asyncpg's default
+command timeout in seconds. Both adapters accept `configure`, `min_size` and
+`max_size`. Omitted options retain driver defaults.
+
+### Externally owned pools
+
+`from_pool` wraps your pool without changing its codecs, callbacks or ownership.
+Use the public driver-specific `configure_codecs` helper when creating that
+pool to opt into etchdb's JSONB behavior alongside your own setup:
 
 ```python
 import asyncpg
 from etchdb import DB
-from etchdb.asyncpg import AsyncpgAdapter
+from etchdb.asyncpg import AsyncpgAdapter, configure_codecs
 
 async def init_conn(conn):
+    await configure_codecs(conn)
     await conn.set_type_codec(
         "memory_domain",          # the ENUM type name
         encoder=str, decoder=str,
@@ -249,7 +306,16 @@ async def init_conn(conn):
 
 pool = await asyncpg.create_pool(url, init=init_conn, min_size=2, max_size=10)
 db = DB(AsyncpgAdapter.from_pool(pool))
+# The application closes this externally owned pool: await pool.close().
 ```
+
+For psycopg, import `configure_codecs` from `etchdb.psycopg` and call it in
+your pool's async `configure` callback before application setup. The old
+private `_init_codecs` names remain compatibility aliases; new code should
+use the public helper. Psycopg's helper adapts Python lists as JSONB, matching
+etchdb's existing defaults; native PostgreSQL arrays may require explicit
+driver adaptation. SQL NULL remains `None`; codecs do not replace it with
+an empty collection.
 
 Both Postgres adapters take libpq-native `$1, $2, ...` placeholders in raw SQL. The psycopg adapter uses `AsyncRawCursor` so the `$N` form works there too; psycopg's default `%s` form is not used and will produce a Postgres syntax error.
 

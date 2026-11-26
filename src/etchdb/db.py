@@ -17,7 +17,7 @@ from urllib.parse import urlparse
 from etchdb import sql
 
 if TYPE_CHECKING:
-    from collections.abc import AsyncIterator, Mapping, Sequence
+    from collections.abc import AsyncIterator, Awaitable, Callable, Mapping, Sequence
     from pathlib import Path
 
     from etchdb.adapter import AdapterBase
@@ -77,6 +77,7 @@ class DB:
         *,
         min_size: int | None = None,
         max_size: int | None = None,
+        configure: Callable[[Any], Awaitable[None]] | None = None,
     ) -> DB:
         """Open a DB from a URL, dispatching on the URL scheme.
 
@@ -89,12 +90,17 @@ class DB:
         driver they actually use installed.
 
         `min_size` / `max_size` forward to the underlying Postgres pool
-        and are ignored on aiosqlite (no pool concept). For knobs
-        beyond size, construct the pool yourself and use the adapter's
-        `from_pool` directly.
+        and are ignored on aiosqlite (no pool concept).
+        `configure` runs on every new Postgres connection after etchdb's
+        built-in codecs. Its connection type depends on the selected driver.
+        With psycopg, setup SQL must leave the connection idle. SQLite
+        rejects this Postgres-only hook. For driver-specific options, use
+        the adapter's `from_url` or wrap your own pool with `from_pool`.
         """
         scheme = urlparse(url).scheme.lower()
-        pool_kwargs = {"min_size": min_size, "max_size": max_size}
+        pool_kwargs: dict[str, Any] = {"min_size": min_size, "max_size": max_size}
+        if configure is not None:
+            pool_kwargs["configure"] = configure
 
         if scheme in {"postgresql", "postgres", "postgresql+asyncpg"}:
             from etchdb.asyncpg import AsyncpgAdapter
@@ -109,6 +115,8 @@ class DB:
             url = "postgresql://" + url.split("://", 1)[1]
             adapter = await PsycopgAdapter.from_url(url, **pool_kwargs)
         elif scheme in {"sqlite", "sqlite+aiosqlite"}:
+            if configure is not None:
+                raise ValueError("configure is only supported by the Postgres adapters")
             from etchdb.aiosqlite import AiosqliteAdapter
 
             adapter = await AiosqliteAdapter.from_url(url, **pool_kwargs)
