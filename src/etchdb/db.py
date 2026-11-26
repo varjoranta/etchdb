@@ -254,18 +254,21 @@ class DB:
     ) -> AsyncIterator[R]:
         """Stream every matching row via keyset pagination.
 
-        Unlike `iter_rows`, per-page cost stays constant: each page
-        reads `batch_size` rows via `WHERE (by, *pk_tail) > (...)`
-        rather than `OFFSET N`, so total cost is O(N) instead of
-        O(N^2). `by` must be a single DB-orderable column. PK columns
-        break ties on `by` and let the cursor paginate through NULL
-        values; the cursor is `[by] + [p for p in __pk__ if p != by]`.
+        Unlike `iter_rows`, a page does not skip the rows before it:
+        each one reads `batch_size` rows via `WHERE (by, *pk_tail) >
+        (...)` rather than `OFFSET N`. With an index that matches the
+        ordering the total cost is O(N) instead of O(N^2); the
+        primary-key index does for the default `by`. `by` must be a
+        single DB-orderable column. PK columns break ties on `by` and
+        let the cursor paginate through NULL values; the cursor is
+        `[by] + [p for p in __pk__ if p != by]`.
 
         `by` defaults to `model.__pk__[0]` (composite PK requires
         explicit `by=`). Filters are AND'd with the cursor. Ordering
-        is ascending with `NULLS FIRST` -- NULL rows iterate first
-        on every backend. Descending is not supported. SQLite 3.30+
-        is required (for the `NULLS FIRST` keyword).
+        is ascending. A non-PK `by` is ordered `NULLS FIRST`, so NULL
+        rows iterate first on every backend; that needs SQLite 3.30+,
+        and on Postgres an index declared `(by NULLS FIRST, *pk)` to
+        avoid a sort per page. Descending is not supported.
         """
         if batch_size < 1:
             raise ValueError(f"batch_size must be >= 1, got {batch_size}")

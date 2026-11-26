@@ -40,7 +40,7 @@ users = await db.fetch_models(User, """
 """, since)
 
 q = db.compose("get", User, id=alice.id)
-print(q.sql)     # SELECT id, name, email FROM users WHERE id = $1
+print(q.sql)     # SELECT id, name, email FROM users WHERE id = $1 LIMIT 1
 print(q.params)  # [1]
 ```
 
@@ -113,14 +113,15 @@ from etchdb import Inc, Now
 await db.update(Counter.patch(id=1, n=Inc()))           # n = n + 1
 await db.update(Article.patch(id=1, updated_at=Now()))  # = CURRENT_TIMESTAMP
 
-# Bulk insert / delete (chunked at the driver's parameter limit).
+# Bulk insert / delete (chunked at the driver's parameter limit; a
+# batch that needs several statements runs them in one transaction).
 await db.insert_many([User(name=n) for n in names], on_conflict="ignore")
 await db.insert_many(rows, on_conflict="upsert")    # ON CONFLICT (pk) DO UPDATE SET ...
 await db.delete_many(User, [1, 2, 3])
 
 # Bulk update: same patch applied to all rows matching a filter.
 # Returns the affected-row count.
-n = await db.update_where(User.patch(status="archived"),
+n = await db.update_where(User.patch(email=None),
                           where={"id": [1, 2, 3]})
 
 # Upsert via single insert: same rules, returns the DB's view.
@@ -132,11 +133,13 @@ alice = await db.insert(User(id=1, name="Alice", email="a@x"),
 async for user in db.iter_rows(User, batch_size=500):
     process(user)
 
-# For huge tables, iter_rows_keyset stays O(N) by emitting a
-# `(by, *pk_tail) > last_seen` cursor per page. PK tail breaks
-# ties and lets the cursor paginate through NULL values. Order
-# is `ORDER BY by NULLS FIRST` -- deterministic across backends.
-# `by` defaults to __pk__[0]. SQLite 3.30+ required.
+# For huge tables, iter_rows_keyset avoids the growing OFFSET by
+# emitting a `(by, *pk_tail) > last_seen` cursor per page. PK tail
+# breaks ties and lets the cursor paginate through NULL values.
+# `by` defaults to __pk__[0], which walks the primary-key index.
+# A non-PK `by` is ordered `NULLS FIRST` (deterministic across
+# backends; SQLite 3.30+) and stays O(N) only with an index on
+# `(by NULLS FIRST, *pk)`; without one each page sorts the table.
 async for user in db.iter_rows_keyset(User, batch_size=500):
     process(user)
 
@@ -154,13 +157,16 @@ val = await db.fetchval("SELECT count(*) FROM users")  # always returns the coun
                                                        # fetchval returns None on no row.
 await db.execute("UPDATE users SET active = false WHERE id = $1", uid)
 
-# Transactions
+# Transactions: use the `tx` handle inside the block. On Postgres a
+# call on `db` there runs on another connection, outside the
+# transaction. SQLite has one connection, so everything on a DB
+# shares it; give concurrent tasks that need isolation their own DB.
 async with db.transaction() as tx:
     await tx.insert(User(name="Carol"))
     await tx.execute("INSERT INTO audit_log (...) VALUES (...)")
 
 # Healthcheck + lifecycle
-ok = await db.ping()            # SELECT 1 round-trip; raises on failure
+ok = await db.ping()            # SELECT 1 round-trip; False on failure, never raises
 async with db:                  # close on scope exit (DB must already be open)
     ...
 
@@ -173,7 +179,7 @@ status = await db.migration_status("migrations/")  # MigrationStatus dataclass
 
 # Inspect SQL before executing (etchdb's defining feature)
 q = db.compose("get", User, id=1)
-print(q.sql)     # SELECT id, name, email FROM users WHERE id = $1
+print(q.sql)     # SELECT id, name, email FROM users WHERE id = $1 LIMIT 1
 print(q.params)  # [1]
 
 # Same inspector without a live DB - useful in tests:
@@ -183,9 +189,9 @@ q = sql.compose("get", User, id=1, placeholder=lambda i: f"${i + 1}")
 
 `insert` only emits the columns you actually set, so an unset `id` lets the database allocate one (SERIAL or INTEGER PRIMARY KEY); the returned Row reflects the DB's view (`RETURNING *`), so server-defaults like `id` and `created_at` are populated in place. `update` does the same: a column you didn't touch keeps its current value rather than being clobbered. An explicit `None` counts as set in both cases.
 
-`update` and `delete` use the value of every column in `__pk__` (default: `("id",)`) as the WHERE clause; override the class attribute for a composite or differently-named primary key. Add extra equality filters with `where={...}` for guarded updates: multi-tenant scoping like `where={"user_id": current_user}` is the canonical use case. Raw SQL is still the right tool when you need anything richer than equality.
+`update` and `delete` use the value of every column in `__pk__` (default: `("id",)`) as the WHERE clause; override the class attribute for a composite or differently-named primary key. Add extra equality filters with `where={...}` for guarded updates: multi-tenant scoping like `where={"user_id": current_user}` is the canonical use case. Filter values are always bound as parameters. Filter names go into the statement as column names, so they must be plain identifiers (letters, digits, underscore) and anything else raises `ValueError`; keep them in your code rather than taking them from request input. Raw SQL is still the right tool when you need anything richer than equality.
 
-Use `Row.patch(**fields)` to build a partial Row that satisfies neither validation nor missing-required-field checks. It's the right shape when you want partial updates against a model with NOT NULL columns.
+Use `Row.patch(**fields)` to build a partial Row that satisfies neither validation nor missing-required-field checks. It's the right shape when you want partial updates against a model with NOT NULL columns. A name that is not a field of the model raises `ValueError`.
 
 Set `__fields_not_in_db__ = ("computed_label",)` on a Row class to carry computed or transient fields alongside DB-backed ones without etchdb sending them to or reading them from the database. The fields stay on the Pydantic model (validation, attribute access, type checking all work as normal); they're just dropped from INSERT, UPDATE, and SELECT column lists. Give such fields a default value -- read paths hydrate from the SELECT result, which never carries the column, so Pydantic uses the default.
 
@@ -209,7 +215,7 @@ except IntegrityError as e:
     # e.__cause__ is the original asyncpg / psycopg / sqlite3 exception
 ```
 
-`except EtchdbError` catches every member of the family at once.
+`except EtchdbError` catches every member of the family at once. The family covers the categories listed above; other driver errors (a syntax error, a data-type error, asyncpg's command timeout) propagate as the driver's own exception.
 
 ## Install
 
@@ -232,7 +238,7 @@ from etchdb.asyncpg import AsyncpgAdapter     # requires asyncpg
 db = DB(AsyncpgAdapter.from_pool(my_pool))
 ```
 
-`from_url` registers a JSONB codec on every connection so `dict` and `list` parameters round-trip with `UUID`, `datetime`, `Enum`, and Pydantic `BaseModel` values handled transparently. JSONB columns come back as Python objects directly: no `json.loads` at the call site, no manual `json.dumps` to insert.
+`from_url` registers a JSONB codec on every connection so `dict` and `list` parameters round-trip with `UUID`, `datetime`, `Enum`, and Pydantic `BaseModel` values handled transparently. JSONB columns come back as Python objects directly: no `json.loads` at the call site, no manual `json.dumps` to insert. Pass the `dict` or `list` itself: a string you serialised beforehand is stored as a JSON string value on asyncpg, not as the object it spells.
 
 ### Connection setup
 
@@ -326,8 +332,10 @@ For psycopg, import `configure_codecs` from `etchdb.psycopg` and call it in
 your pool's async `configure` callback before application setup. The old
 private `_init_codecs` names remain compatibility aliases; new code should
 use the public helper. Psycopg's helper adapts Python lists as JSONB, matching
-etchdb's existing defaults; native PostgreSQL arrays may require explicit
-driver adaptation. SQL NULL remains `None`; codecs do not replace it with
+etchdb's existing defaults, so a list bound to an array parameter
+(`= ANY($1::int[])`) works on asyncpg and fails on psycopg. For a query that
+runs on both, use an `IN` filter (`db.query(User, id=[1, 2, 3])`) or expand
+the JSONB value: `id IN (SELECT jsonb_array_elements_text($1::jsonb)::int)`. SQL NULL remains `None`; codecs do not replace it with
 an empty collection.
 
 Both Postgres adapters take libpq-native `$1, $2, ...` placeholders in raw SQL. The psycopg adapter uses `AsyncRawCursor` so the `$N` form works there too; psycopg's default `%s` form is not used and will produce a Postgres syntax error.
@@ -407,6 +415,8 @@ Tracking lives in a `_etchdb_migrations` table created lazily on first call, wit
 - **Disappearance**: an applied filename is no longer in the directory. Renames count as both a disappearance and a new file.
 
 In both cases the error names the recovery (`DELETE FROM _etchdb_migrations WHERE filename = '...'` then re-run, or restore the missing file). Silent continuation with unknown state is exactly what a forward-only tool exists to prevent.
+
+Run `migrate` from one process at a time (a deploy step or a one-shot job, not every replica at boot): the runner takes no lock, so two processes that start together both try to apply the same pending file.
 
 Other migration tools (Alembic, dbmate, sqitch) still slot in fine if you want autogenerate, branching, or rollback — etchdb's helper covers the simple forward-only case without dragging those in.
 

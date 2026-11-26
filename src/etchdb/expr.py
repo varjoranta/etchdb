@@ -56,7 +56,8 @@ class Inc(_Expr):
     - Construct rows that hold an `Inc` via `Row.patch(...)`. A
       sentinel does not pass Pydantic validation for the field's
       declared type, so plain `Row(...)` would raise.
-    - `Inc` is accepted by `db.update` only. `db.insert` /
+    - `Inc` is accepted by `db.update` and `db.update_where` only.
+      `db.insert` /
       `db.insert_many` reject it (incrementing a row that does not
       exist yet is undefined). The rejection covers `on_conflict=
       "upsert"` too: the INSERT branch still needs a literal initial
@@ -85,7 +86,8 @@ class Now(_Expr):
     - Construct rows that hold a `Now` via `Row.patch(...)`. A
       sentinel does not pass Pydantic validation for the field's
       declared type, so plain `Row(...)` would raise.
-    - `Now` is accepted by `db.update` only. `db.insert` /
+    - `Now` is accepted by `db.update` and `db.update_where` only.
+      `db.insert` /
       `db.insert_many` reject it, including under `on_conflict=
       "upsert"`; the INSERT branch still needs a literal initial
       value. For a server-default insert timestamp, prefer a column

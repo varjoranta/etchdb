@@ -2,7 +2,11 @@
 
 Uses `psycopg.AsyncRawCursor` so raw SQL keeps libpq-native `$1, $2, ...`
 placeholders: the same form the asyncpg adapter accepts. Callers can
-swap between the two Postgres adapters without rewriting their queries.
+swap between the two Postgres adapters without rewriting their queries,
+with one exception: a Python list parameter is sent as JSONB here (so
+`dict` / `list` round-trip into jsonb columns unwrapped), where asyncpg
+would send it as a Postgres array. `= ANY($1::int[])` with a list
+therefore needs rewriting; see "Externally owned pools" in the README.
 """
 
 from __future__ import annotations
