@@ -10,7 +10,7 @@ import re
 from collections.abc import Callable, Mapping, Sequence
 from typing import Any, Literal
 
-from etchdb.expr import _Expr
+from etchdb.expr import _Expr, _is_sqlite, _Predicate
 from etchdb.query import SqlQuery
 from etchdb.row import Row
 
@@ -75,18 +75,25 @@ def select_one(
     """Build a SELECT for at most one row matching `filters`.
 
     Filters are joined with AND. A `None` value emits `IS NULL`.
-    `select_one` is the single-row verb, so list / tuple filters are
-    rejected (they would produce `IN (...) LIMIT 1` and silently
-    return "the first match", which is rarely the intent); use
-    `select_many` for those instead. Pass no filters to fetch the
-    first row in the table (mostly useful for tests / single-row
-    tables).
+    `select_one` is the single-row verb, so list / tuple filters and
+    filter operators are rejected (they would produce `IN (...) LIMIT
+    1` or `> $1 LIMIT 1` and silently return "the first match", which
+    is rarely the intent); use `select_many` for those instead. Pass
+    no filters to fetch the first row in the table (mostly useful for
+    tests / single-row tables).
     """
     list_fields = [f for f, v in filters.items() if isinstance(v, list | tuple)]
     if list_fields:
         raise ValueError(
             f"select_one does not accept list / tuple filters: {list_fields}. "
             f"Use select_many (or db.query) for IN-style filters; "
+            f"select_one is the single-row verb."
+        )
+    operator_fields = [f for f, v in filters.items() if isinstance(v, _Predicate)]
+    if operator_fields:
+        raise ValueError(
+            f"select_one does not accept filter operators: {operator_fields}. "
+            f"Use select_many (or db.query) with a limit and an order_by; "
             f"select_one is the single-row verb."
         )
 
@@ -114,8 +121,9 @@ def select_many(
     """Build a SELECT for multiple rows.
 
     Filters (keyword arguments) are joined with AND. `None` emits
-    `IS NULL`; list / tuple emits `IN (...)`; anything else binds as
-    `= $N`. `limit`, `offset`, and `order_by` are keyword-only.
+    `IS NULL`; list / tuple emits `IN (...)`; a filter operator (`Gt`,
+    `Range`, `Not`, `Contains`, ...) emits its own condition; anything
+    else binds as `= $N`. `limit`, `offset`, and `order_by` are keyword-only.
     `limit` and `offset` are bound as parameters; `order_by` is
     interpolated as a raw SQL fragment, so do not pass user-controlled
     values to it. Filter names must be plain column identifiers and
@@ -141,10 +149,9 @@ def select_many(
         n = int(offset)
         if n < 0:
             raise ValueError(f"offset must be >= 0, got {n}")
-        if limit is None and placeholder(0) == "?":
+        if limit is None and _is_sqlite(placeholder):
             # SQLite has no OFFSET without LIMIT; -1 is its "no limit".
-            # The `?` placeholder is how this driver-free emitter can
-            # tell: Postgres rejects a negative LIMIT.
+            # Postgres rejects a negative LIMIT.
             sql += " LIMIT -1"
         params.append(n)
         sql += f" OFFSET {placeholder(len(params) - 1)}"
@@ -271,8 +278,9 @@ def update(
     Only fields in `model_fields_set` go into the SET clause, giving
     partial-update semantics: columns the caller didn't touch are
     preserved. WHERE uses every field in `__pk__`, AND'd with any
-    extra equality filters from `where=`; a `None` in `where=` emits
-    `IS NULL`. The common multi-tenant pattern is
+    extra filters from `where=`, which takes the same values as a
+    query filter (`None`, a list, a filter operator). The common
+    multi-tenant pattern is
     `update(row, where={"user_id": current_user_id})` so the update is
     atomic with the ownership check.
 
@@ -351,8 +359,8 @@ def delete(
     where: Mapping[str, Any] | None = None,
 ) -> SqlQuery:
     """Build a DELETE for `row` keyed by its primary key, optionally
-    AND'd with extra equality filters from `where=`. A `None` in
-    `where=` emits `IS NULL`.
+    AND'd with extra filters from `where=`, which takes the same
+    values as a query filter.
 
     Raises ValueError if any PK field is unset (no row to identify),
     or if `where=` keys overlap with `__pk__`.
@@ -455,6 +463,13 @@ def delete_many(
     """
     if not pk_values:
         raise ValueError("delete_many requires at least one PK value")
+    for pk_value in pk_values:
+        parts = pk_value.values() if isinstance(pk_value, Mapping) else (pk_value,)
+        if any(isinstance(v, _Expr | _Predicate) for v in parts):
+            raise ValueError(
+                "delete_many takes primary-key values, not sentinels or filter "
+                "operators; use raw SQL to delete by a condition."
+            )
 
     table = _table_name(model)
     pk_fields = list(model.__pk__)
@@ -543,18 +558,30 @@ def compose(
 
 
 def _reject_exprs(op: str, fields: Sequence[str], values: Sequence[Any]) -> None:
-    """Raise if any value is a column-expression sentinel.
+    """Raise if any value is a column-expression sentinel or a filter
+    operator.
 
     `Inc` / `Now` only make sense in UPDATE SET clauses (they
     reference the column itself or an SQL function). In INSERT they
     would either be undefined (`Inc` on a row that doesn't exist
-    yet) or a footgun, so reject them at the call site.
+    yet) or a footgun, so reject them at the call site. A filter
+    operator is a condition, never a value to store.
     """
     bad = [f for f, v in zip(fields, values, strict=True) if isinstance(v, _Expr)]
     if bad:
         raise ValueError(
             f"Cannot {op} with column-expression sentinels (Inc / Now) on "
             f"{bad}. Use them with db.update on an existing row instead."
+        )
+    _reject_predicates(op, fields, values)
+
+
+def _reject_predicates(op: str, fields: Sequence[str], values: Sequence[Any]) -> None:
+    bad = [f for f, v in zip(fields, values, strict=True) if isinstance(v, _Predicate)]
+    if bad:
+        raise ValueError(
+            f"Cannot {op} with a filter operator as the value of {bad}. Filter "
+            f"operators (Gt, Not, Contains, ...) belong in filters and `where=`."
         )
 
 
@@ -626,6 +653,13 @@ def _pk_where_items(row: Row, op: str, where: Mapping[str, Any] | None) -> dict[
                 f"PK fields are already in WHERE; remove them from where=."
             )
     items: dict[str, Any] = {f: getattr(row, f) for f in row.__pk__}
+    sentinels = [f for f, v in items.items() if isinstance(v, _Expr | _Predicate)]
+    if sentinels:
+        raise ValueError(
+            f"Cannot {op}: primary key field(s) {sentinels} hold a sentinel, not a "
+            f"value. {op} addresses one row by its key; put operators in `where=`, "
+            f"or use update_where / raw SQL for a set of rows."
+        )
     if where:
         items.update(where)
     return items
@@ -656,6 +690,7 @@ def _set_clauses(
     shorter than `items` when an expression renders without bound
     parameters (e.g. `Now()` -> `CURRENT_TIMESTAMP`).
     """
+    _reject_predicates("update", list(items), list(items.values()))
     parts: list[str] = []
     values: list[Any] = []
     for field, value in items.items():
@@ -676,12 +711,14 @@ def _where_clauses(
     start: int = 0,
 ) -> tuple[str, list[Any]]:
     """Build a WHERE-clause body. None becomes `IS NULL`; list/tuple
-    becomes `IN (...)`; everything else becomes `field = $N`. Keys
-    must be plain identifiers: they are the one part of a typed query
-    that reaches the statement unbound.
+    becomes `IN (...)`; a filter operator renders its own condition;
+    everything else becomes `field = $N`. Keys must be plain
+    identifiers: they are the one part of a typed query that reaches
+    the statement unbound.
 
-    Returns `(sql_body, values)`. `IS NULL` keys consume no
-    placeholder, so `values` may be shorter than `items`. `start` is
+    Returns `(sql_body, values)`. A condition may bind no value
+    (`IS NULL`) or several (`IN`, `Range`), so `values` does not line
+    up with `items`. `start` is
     the surrounding parameter-list index at which this clause's first
     bound parameter sits, for Postgres `$N` numbering when SET
     precedes WHERE.
@@ -697,6 +734,16 @@ def _where_clauses(
             )
         if value is None:
             parts.append(f"{field} IS NULL")
+        elif isinstance(value, _Predicate):
+            condition, bound = value.render(field, placeholder, start + len(values))
+            parts.append(condition)
+            values.extend(bound)
+        elif isinstance(value, _Expr):
+            raise ValueError(
+                f"{type(value).__name__} is a SET expression and cannot be the "
+                f"filter value for {field!r}. To compare with the current "
+                f"time, wrap it: Lt(Now())."
+            )
         elif isinstance(value, list | tuple):
             if not value:
                 raise ValueError(

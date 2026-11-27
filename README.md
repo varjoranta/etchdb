@@ -93,10 +93,17 @@ user = await db.get(User, id=alice.id)                # one row or None
 users = await db.query(User)                          # list of rows
 no_email = await db.query(User, email=None)           # IS NULL, not = NULL
 recent = await db.query(User, id=[1, 5, 7])           # IN ($1, $2, $3)
+
+# Filter operators for the common conditions beyond equality.
+from etchdb import Contains, Ge, Not, Range
+adults = await db.query(User, age=Ge(18), email=Not(None))
+window = await db.query(Event, created_at=Range(ge=start, lt=end))
+found = await db.query(User, name=Contains(term, ignore_case=True))
+
 await db.update(User(id=alice.id, name="Alice B"))    # partial: email is preserved
 await db.delete(alice)
 
-# Add `where=` to AND extra equality filters onto the PK. Atomic, so
+# Add `where=` to AND extra filters onto the PK. Atomic, so
 # the scope check runs in the same statement as the update.
 await db.update(User(id=alice.id, name="Alice B"),
                 where={"email": "alice@example.com"})
@@ -189,11 +196,46 @@ q = sql.compose("get", User, id=1, placeholder=lambda i: f"${i + 1}")
 
 `insert` only emits the columns you actually set, so an unset `id` lets the database allocate one (SERIAL or INTEGER PRIMARY KEY); the returned Row reflects the DB's view (`RETURNING *`), so server-defaults like `id` and `created_at` are populated in place. `update` does the same: a column you didn't touch keeps its current value rather than being clobbered. An explicit `None` counts as set in both cases.
 
-`update` and `delete` use the value of every column in `__pk__` (default: `("id",)`) as the WHERE clause; override the class attribute for a composite or differently-named primary key. Add extra equality filters with `where={...}` for guarded updates: multi-tenant scoping like `where={"user_id": current_user}` is the canonical use case. Filter values are always bound as parameters. Filter names go into the statement as column names, so they must be plain identifiers (letters, digits, underscore) and anything else raises `ValueError`; keep them in your code rather than taking them from request input. Raw SQL is still the right tool when you need anything richer than equality.
+`update` and `delete` use the value of every column in `__pk__` (default: `("id",)`) as the WHERE clause; override the class attribute for a composite or differently-named primary key. Add extra filters with `where={...}` for guarded updates: multi-tenant scoping like `where={"user_id": current_user}` is the canonical use case. Filter values are always bound as parameters. Filter names go into the statement as column names, so they must be plain identifiers (letters, digits, underscore) and anything else raises `ValueError`; keep them in your code rather than taking them from request input. Raw SQL is still the right tool when you need anything richer than a per-column condition.
 
 Use `Row.patch(**fields)` to build a partial Row that satisfies neither validation nor missing-required-field checks. It's the right shape when you want partial updates against a model with NOT NULL columns. A name that is not a field of the model raises `ValueError`.
 
 Set `__fields_not_in_db__ = ("computed_label",)` on a Row class to carry computed or transient fields alongside DB-backed ones without etchdb sending them to or reading them from the database. The fields stay on the Pydantic model (validation, attribute access, type checking all work as normal); they're just dropped from INSERT, UPDATE, and SELECT column lists. Give such fields a default value -- read paths hydrate from the SELECT result, which never carries the column, so Pydantic uses the default.
+
+## Filter operators
+
+A filter value, in `query`, `iter_rows`, `iter_rows_keyset` and the `where=` of `update`, `update_where` and `delete`, is one of four things: a plain value (`=`), `None` (`IS NULL`), a list (`IN`), or one of the operators below.
+
+| Operator | SQL |
+|---|---|
+| `Gt(x)`, `Ge(x)`, `Lt(x)`, `Le(x)` | `col > x`, `col >= x`, `col < x`, `col <= x` |
+| `Range(ge=a, lt=b)` | `col >= a AND col < b`; any of `gt`, `ge`, `lt`, `le`, one per side |
+| `Not(x)` | `col <> x`; `Not(None)` is `IS NOT NULL`; `Not([a, b])` is `NOT IN (a, b)` |
+| `Like(p)`, `ILike(p)` | `col LIKE p`, case-insensitive for `ILike`; `%` and `_` are wildcards, `\` escapes |
+| `StartsWith(s)`, `Contains(s)` | `s` matched literally, its wildcards escaped; `ignore_case=True` to fold case |
+
+```python
+from etchdb import Gt, Lt, Not, Now, Range, StartsWith
+
+await db.query(Order, total=Gt(100), state=Not(["CANCELLED", "REFUNDED"]))
+await db.query(Session, expires_at=Lt(Now()))            # expires_at < CURRENT_TIMESTAMP
+await db.query(Event, at=Range(ge=day, lt=day + timedelta(days=1)), order_by="at")
+await db.update_where(Job.patch(state="STALE"), where={"heartbeat_at": Lt(cutoff)})
+await db.query(File, path=StartsWith(user_input))        # % and _ in the input match themselves
+```
+
+Things to know:
+
+- **One condition per column.** Filters are keyword arguments joined with `AND`; `Range` is the way to put two bounds on one column. `OR`, comparisons between two columns, functions and joins stay in raw SQL.
+- **The primary key of `update` and `delete` is a value.** Those address one row, so an operator in the row's key raises; operators go in `where=`. `iter_rows_keyset` does not accept a filter on its `by` column, which the cursor already constrains.
+- **`get` takes equality only.** An operator with `LIMIT 1` would return an arbitrary match, so `db.get` rejects it; use `db.query(..., order_by=..., limit=1)`.
+- **`Not` follows SQL for NULL.** `Not("x")` and `Not([...])` leave out rows where the column is NULL, because `<>` and `NOT IN` are not true for NULL. `Not([])` raises, since an empty exclusion list is usually a caller bug; drop the filter for that case.
+- **`Range` skips a bound that is `None`**, so one optional end of a window passes straight through. With every bound `None` there is nothing to filter on and `Range` raises; leave the filter out in that case. `Gt(None)` and the other comparisons raise, since a comparison with NULL never matches.
+- **`Now()` works as the compared value** in `Gt`, `Ge`, `Lt`, `Le` and `Range`. On SQLite `CURRENT_TIMESTAMP` is the text `YYYY-MM-DD HH:MM:SS` in UTC, so the column has to hold the same format for the comparison to mean anything.
+- **Case sensitivity.** `StartsWith` and `Contains` are case-sensitive on every backend (SQLite uses `GLOB` for this) unless `ignore_case=True`. A raw `Like` is case-sensitive on Postgres but not on SQLite, whose `LIKE` ignores case for ASCII letters. `ILike` and `ignore_case=True` fold ASCII only on SQLite and follow the database locale on Postgres. SQLite's `PRAGMA case_sensitive_like = ON` makes every `LIKE` case-sensitive, `ILike` and `ignore_case=True` included.
+- **Text ordering follows the column's collation.** `Lt("b")` or `Range(ge="a", lt="c")` on a text column can return different rows on Postgres (the database's locale, where `B` usually sorts next to `b`) and SQLite (byte order, where every uppercase ASCII letter sorts before lowercase). Numbers and timestamps compare the same everywhere.
+- **`Like` patterns are yours to escape.** The pattern is a bound parameter, so it cannot inject SQL, but a `%` from user input is still a wildcard. Use `StartsWith` or `Contains` for user text. A pattern that ends in a lone `\` raises `ValueError`.
+- **Operators compare by type and arguments** (`Gt(5) == Gt(5)`) and print as the call that made them, so they work in test assertions and logs.
 
 ## Typed errors
 
@@ -441,9 +483,7 @@ Migration status (./migrations):
 
 ## Under consideration
 
-Comparison sentinels for `where=` filters (`Gt`, `Gte`, `Lt`, `Lte`, accepting either a scalar or the existing `Now()` sentinel) are on the table for a later release. Scope would stay narrow: single-column inequality only; compound predicates, `LIKE`, and `BETWEEN` would still go through raw SQL. Holding the API for more real use cases before committing. Until then, raw SQL via `db.fetch_models(User, "SELECT * FROM users WHERE expires_at > NOW()")` is the canonical answer; that's what etchdb's first-class raw-SQL escape valve is for.
-
-`Inc` / `Now` composing with `on_conflict="upsert"` is a related deferred shape: the create-or-increment pattern would let `db.insert(RateCounter(...), on_conflict="upsert")` carry an `Inc(by=N)` for the conflict SET, but the INSERT branch still needs a literal initial value, so the row would have to express two values per column. Today the sentinels are rejected by `db.insert` / `db.insert_many` outright; raw SQL with `INSERT ... ON CONFLICT (key) DO UPDATE SET count = table.count + 1` covers the case in one statement.
+`Inc` / `Now` composing with `on_conflict="upsert"` is a deferred shape: the create-or-increment pattern would let `db.insert(RateCounter(...), on_conflict="upsert")` carry an `Inc(by=N)` for the conflict SET, but the INSERT branch still needs a literal initial value, so the row would have to express two values per column. Today the sentinels are rejected by `db.insert` / `db.insert_many` outright; raw SQL with `INSERT ... ON CONFLICT (key) DO UPDATE SET count = table.count + 1` covers the case in one statement.
 
 ## Built with AI assistance
 
